@@ -190,11 +190,28 @@
 
     ul, ol { padding-left: 25px; }
     blockquote {
-      margin: 20px 0;
-      padding: 10px 18px;
-      color: #38516b;
-      background: #edf7f8;
-      border-left: 4px solid var(--cyan);
+     margin: 20px 0;
+     padding: 10px 18px;
+     color: #38516b;
+     background: #edf7f8;
+     border-left: 4px solid var(--cyan);
+   }
+
+    article img {
+      display: block;
+      width: 100%;
+      height: auto;
+      margin: 22px 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      box-shadow: 0 4px 18px rgba(23, 58, 99, .12);
+    }
+    article img + em {
+      display: block;
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
     }
 
     .loading, .error {
@@ -239,7 +256,8 @@
       "./step1_add_kernel_lecture.md",
       "./part2_tensoroj_add_simple.md",
       "./part3_tensoroj_cpp_api.md",
-      "./part4_add_medium_tiling.md"
+      "./part4_add_medium_tiling.md",
+      "./part5_double_buffering.md"
     ];
     const content = document.getElementById("content");
     const toc = document.getElementById("toc");
