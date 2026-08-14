@@ -59,7 +59,7 @@ NPU
   AI Core 15 <- Block 15: 元素 [161280, 172032)
 ```
 
-## 一次 Add 计算发生了什么
+## 一个 Block 内部的 Add 计算
 
 Host 先将输入从 Host Memory 复制到 Global Memory。随后 Device 端的 Kernel 只在 Global Memory 与 AI Core 的 UB 之间移动数据：一个 Block 从 GM 读取 `x` 和 `y`，将它们搬入 UB，在 UB 中完成 `x + y`，再把结果写回 GM 中的 `z`。
 
