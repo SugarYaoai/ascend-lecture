@@ -8,7 +8,7 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-这一节的目标是从 C API 切换到 C++ API，但仍然只处理一个固定长度的 Block。暂时不引入 Tile 循环或流水线机制。
+这一节从 C API 切换到 C++ API，并继续处理一个固定长度的 Block。
 
 ### C API 与 C++ API 的对应
 
@@ -40,7 +40,7 @@ zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + offset, BLOCK_LENGTH);
 
 ### 2. 用 LocalMemAllocator 直接申请三块 UB
 
-本节只有一次搬入、一次计算、一次写回，因此不需要队列。`LocalMemAllocator<AscendC::Hardware::UB>` 直接从当前 AI Core 的 UB 中申请三块局部张量：
+`LocalMemAllocator<AscendC::Hardware::UB>` 直接从当前 AI Core 的 UB 中申请三块局部张量，分别保存 `x`、`y` 和 `z`：
 
 ```cpp
 AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
@@ -137,5 +137,3 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<BLOCK_LENGTH><<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
-
-Part 4 才引入更大的数据范围与 Tile 循环；Part 5 再讨论如何让相邻 Tile 的搬运、计算和写回重叠。
