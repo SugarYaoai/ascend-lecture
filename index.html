@@ -292,7 +292,7 @@
       headings.forEach((heading) => observer.observe(heading));
     }
 
-    function colorDataFlow(block) {
+   function colorDataFlow(block) {
       const raw = block.textContent;
       const isDataFlow = /Host Memory|Global Memory|\bUB\b|AI Core|Block \d+|asc_copy|aclrtMemcpy/.test(raw);
       if (!isDataFlow) return;
@@ -308,16 +308,30 @@
         .replace(/(\[\d+, \d+\))/g, '<span class="flow-range">$1</span>')
         .replace(/(aclrtMemcpy|asc_copy_gm2ub|asc_copy_ub2gm|asc_add)/g, '<span class="flow-op">$1</span>')
         .replace(/(^[ \t]*)(\||v)(?=\r?$)/gm, '$1<span class="flow-arrow">$2</span>')
-        .replace(/(↓|→|&lt;-)/g, '<span class="flow-arrow">$1</span>');
+       .replace(/(↓|→|&lt;-)/g, '<span class="flow-arrow">$1</span>');
+   }
+
+    function renderDisplayMath(markdown) {
+      const formulas = [];
+      const preparedMarkdown = markdown.replace(/^\$\$\s*\r?\n([\s\S]*?)\r?\n\$\$\s*$/gm, (_, latex) => {
+        const formulaIndex = formulas.push(latex.trim()) - 1;
+        return `<div class="math-block" data-formula-index="${formulaIndex}"></div>`;
+      });
+
+      content.innerHTML = marked.parse(preparedMarkdown);
+      content.querySelectorAll(".math-block").forEach((element) => {
+        const latex = formulas[Number(element.dataset.formulaIndex)];
+        katex.render(latex, element, { displayMode: true, throwOnError: false });
+      });
     }
 
-    Promise.all(sourceFiles.map((sourceFile) => fetch(sourceFile).then((response) => {
+   Promise.all(sourceFiles.map((sourceFile) => fetch(sourceFile).then((response) => {
       if (!response.ok) throw new Error(`无法读取讲义（HTTP ${response.status}）`);
       return response.text();
     })))
       .then((documents) => {
         const markdown = documents.join("\n\n---\n\n");
-        content.innerHTML = marked.parse(markdown);
+        renderDisplayMath(markdown);
         content.querySelectorAll("pre code").forEach((block) => {
           block.classList.add("hljs");
           const language = [...block.classList]
