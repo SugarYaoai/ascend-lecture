@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Add 算子快速入门</title>
+  <title>动手学昇腾算子开发</title>
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/styles/vs2015.min.css">
@@ -235,7 +235,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Ascend C <span>Add 算子讲义</span></div>
+    <div class="brand">Ascend C <span>动手学昇腾算子开发</span></div>
   </header>
   <div class="shell">
     <aside aria-label="文档目录">
@@ -276,7 +276,7 @@
         link.href = `#${heading.id}`;
         link.textContent = heading.textContent;
         link.className = `level-${heading.tagName.slice(1)}`;
-        if (heading.textContent.startsWith("Part ")) {
+        if (heading.textContent.startsWith("Part ") || /^第[一二三四五六七八九十]+节/.test(heading.textContent)) {
           link.classList.add("part-heading");
         }
         toc.appendChild(link);

@@ -2,7 +2,7 @@
 
 使用 Ascend C SIMD 的 **C API** 实现 Add 算子。
 
-## Part 1：固定长度 Add Kernel
+## 第一节：固定长度 Add Kernel
 
 ## Add 算子功能介绍
 
