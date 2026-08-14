@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Add 算子快速入门</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/styles/vs2015.min.css">
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5f6b7e;
+      --line: #dce3ec;
+      --paper: #ffffff;
+      --page: #f5f7fa;
+      --navy: #173a63;
+      --blue: #146bb7;
+      --cyan: #008b99;
+      --code: #0f1724;
+      --code-line: #243247;
+      --table-head: #eaf1f8;
+      --sidebar-width: 272px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--page);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      line-height: 1.78;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      padding: 0 28px;
+      color: #fff;
+      background: var(--navy);
+      border-bottom: 1px solid rgba(255, 255, 255, .14);
+    }
+
+    .brand { font-weight: 700; font-size: 16px; }
+    .brand span { color: #8ee8ef; font-weight: 600; margin-left: 10px; }
+
+    .shell {
+      width: min(1440px, 100%);
+      min-height: calc(100vh - 58px);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+    }
+
+    aside {
+      position: sticky;
+      top: 58px;
+      height: calc(100vh - 58px);
+      padding: 30px 20px;
+      overflow-y: auto;
+      border-right: 1px solid var(--line);
+      background: #edf2f7;
+    }
+
+    .toc-label {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+
+    #toc { display: grid; gap: 3px; }
+    #toc a {
+      display: block;
+      padding: 7px 10px;
+      color: #40526a;
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    #toc a.level-3 { padding-left: 22px; font-size: 13px; }
+    #toc a.part-heading {
+      margin-top: 12px;
+      padding: 9px 10px;
+      color: #173a63;
+      background: #dfeaf4;
+      border-left: 3px solid #146bb7;
+      font-weight: 700;
+    }
+    #toc a:hover, #toc a.active {
+      color: var(--blue);
+      border-left-color: var(--blue);
+      background: #fff;
+    }
+
+    main {
+      min-width: 0;
+      padding: 46px clamp(26px, 6vw, 88px) 86px;
+      background: var(--paper);
+    }
+
+    article { max-width: 900px; margin: 0 auto; }
+    article > h1:first-child { margin-top: 0; }
+
+    h1, h2, h3 { color: var(--ink); line-height: 1.25; scroll-margin-top: 82px; }
+    h1 {
+      margin: 0 0 28px;
+      padding-bottom: 18px;
+      font-size: 34px;
+      letter-spacing: 0;
+      border-bottom: 3px solid var(--blue);
+    }
+    h2 {
+      margin: 50px 0 20px;
+      padding-bottom: 9px;
+      font-size: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+    h3 { margin: 30px 0 14px; font-size: 19px; }
+    p { margin: 14px 0; }
+    a { color: var(--blue); }
+    strong { color: #102f50; }
+
+    code {
+      padding: .12em .35em;
+      color: #a21b42;
+      background: #f1f3f6;
+      border-radius: 3px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: .88em;
+    }
+
+    pre {
+      position: relative;
+      margin: 20px 0 26px;
+      padding: 19px 22px;
+      overflow: auto;
+      background: #1e1e1e;
+      border: 1px solid #303030;
+      border-radius: 6px;
+      box-shadow: inset 3px 0 0 #007acc;
+    }
+    pre code {
+      padding: 0;
+      color: #d4d4d4;
+      background: transparent;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+    pre code.hljs { color: #d4d4d4; background: transparent; }
+    pre.dataflow {
+      padding: 18px 22px;
+      background: #101a2a;
+      border-color: #203956;
+      box-shadow: inset 3px 0 0 #19b7c6;
+    }
+    pre.dataflow code {
+      display: block;
+      color: #d8e3f2;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+    .flow-host { color: #f0b76a; font-weight: 700; }
+    .flow-gm { color: #63c7ff; font-weight: 700; }
+    .flow-ub { color: #85deab; font-weight: 700; }
+    .flow-core { color: #cba8ff; font-weight: 700; }
+    .flow-block { color: #f2d36d; font-weight: 700; }
+    .flow-op { color: #67d4c8; font-weight: 700; }
+    .flow-arrow { color: #86a3c4; font-weight: 700; }
+
+    table {
+      width: 100%;
+      margin: 19px 0 24px;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td { padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #173a63; background: var(--table-head); font-weight: 700; }
+    tr:nth-child(even) td { background: #fafbfd; }
+
+    ul, ol { padding-left: 25px; }
+    blockquote {
+      margin: 20px 0;
+      padding: 10px 18px;
+      color: #38516b;
+      background: #edf7f8;
+      border-left: 4px solid var(--cyan);
+    }
+
+    .loading, .error {
+      margin: 90px auto;
+      max-width: 760px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 800px) {
+      .topbar { padding: 0 18px; }
+      .brand span { display: none; }
+      .shell { display: block; }
+      aside { display: none; }
+      main { padding: 32px 20px 58px; }
+      h1 { font-size: 28px; }
+      h2 { font-size: 22px; }
+      pre { margin-left: -4px; margin-right: -4px; padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Ascend C <span>Add 算子讲义</span></div>
+  </header>
+  <div class="shell">
+    <aside aria-label="文档目录">
+      <p class="toc-label">目录</p>
+      <nav id="toc"></nav>
+    </aside>
+    <main>
+      <article id="content"><p class="loading">正在加载讲义...</p></article>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/lib/marked.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js"></script>
+  <script>
+    const sourceFiles = [
+      "./step1_add_kernel_lecture.md",
+      "./part2_tensoroj_add_simple.md",
+      "./part3_tensoroj_cpp_api.md",
+      "./part4_add_medium_tiling.md"
+    ];
+    const content = document.getElementById("content");
+    const toc = document.getElementById("toc");
+
+    marked.setOptions({ gfm: true, breaks: false });
+
+    function slugify(text, index) {
+      return `section-${index}-${text.trim().toLowerCase().replace(/[^\\w\\u4e00-\\u9fff]+/g, "-")}`;
+    }
+
+    function buildToc() {
+      const headings = [...content.querySelectorAll("h2, h3")];
+      headings.forEach((heading, index) => {
+        heading.id = slugify(heading.textContent, index);
+        const link = document.createElement("a");
+        link.href = `#${heading.id}`;
+        link.textContent = heading.textContent;
+        link.className = `level-${heading.tagName.slice(1)}`;
+        if (heading.textContent.startsWith("Part ")) {
+          link.classList.add("part-heading");
+        }
+        toc.appendChild(link);
+      });
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting);
+        if (!visible.length) return;
+        const current = visible.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0].target.id;
+        toc.querySelectorAll("a").forEach((link) => link.classList.toggle("active", link.hash === `#${current}`));
+      }, { rootMargin: "-82px 0px -70% 0px" });
+      headings.forEach((heading) => observer.observe(heading));
+    }
+
+    function colorDataFlow(block) {
+      const raw = block.textContent;
+      const isDataFlow = /Host Memory|Global Memory|\bUB\b|AI Core|asc_copy|aclrtMemcpy/.test(raw);
+      if (!isDataFlow) return;
+
+      block.parentElement.classList.add("dataflow");
+      const escaped = raw.replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
+      block.innerHTML = escaped
+        .replace(/(Host Memory|CPU \/ Host|Host)/g, '<span class="flow-host">$1</span>')
+        .replace(/(Global Memory|Device Global Memory|\bGM\b)/g, '<span class="flow-gm">$1</span>')
+        .replace(/(x_local, y_local, z_local|UB: x_local, y_local|UB: z_local|\bUB\b)/g, '<span class="flow-ub">$1</span>')
+        .replace(/(AI Core \d+|AI Core)/g, '<span class="flow-core">$1</span>')
+        .replace(/(Block \d+|\d+ 个 Block)/g, '<span class="flow-block">$1</span>')
+        .replace(/(aclrtMemcpy|asc_copy_gm2ub|asc_copy_ub2gm|asc_add)/g, '<span class="flow-op">$1</span>')
+        .replace(/(^[ \t]*)(\||v)(?=\r?$)/gm, '$1<span class="flow-arrow">$2</span>')
+        .replace(/(↓|→|&lt;-)/g, '<span class="flow-arrow">$1</span>');
+    }
+
+    Promise.all(sourceFiles.map((sourceFile) => fetch(sourceFile).then((response) => {
+      if (!response.ok) throw new Error(`无法读取讲义（HTTP ${response.status}）`);
+      return response.text();
+    })))
+      .then((documents) => {
+        const markdown = documents.join("\n\n---\n\n");
+        content.innerHTML = marked.parse(markdown);
+        content.querySelectorAll("pre code").forEach((block) => {
+          block.classList.add("hljs");
+          const language = [...block.classList]
+            .find((name) => name.startsWith("language-"))
+            ?.replace("language-", "");
+          if (window.hljs && language && window.hljs.getLanguage(language)) {
+            hljs.highlightElement(block);
+          }
+          if (language === "text") colorDataFlow(block);
+        });
+        renderMathInElement(content, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "\\[", right: "\\]", display: true }
+          ],
+          throwOnError: false
+        });
+        buildToc();
+      })
+      .catch((error) => {
+        content.innerHTML = `<p class="error">${error.message}</p>`;
+      });
+  </script>
+</body>
+</html>
