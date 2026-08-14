@@ -155,7 +155,7 @@ __ubuf__ float z_local[block_length];
 
 三段 UB 缓冲区分别保存当前 Block 负责的 `10752` 个 `float` 元素。
 
-有了这三块 UB 空间后，Kernel 执行开头展示的“搬入、相加、搬出”三步：
+有了这三块 UB 空间后，Kernel 按以下顺序完成“搬入、相加、搬出”三步：
 
 ```cpp
 asc_copy_gm2ub(x_local, x_gm, block_length * sizeof(float));
