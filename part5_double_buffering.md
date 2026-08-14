@@ -21,15 +21,12 @@ UB -> GM:                              [写回 Tile 0]          [写回 Tile 1]
 单缓冲：同一组 UB 反复使用，阶段之间大多只能等待。
 ```
 
-![Tile 循环示意图](assets/double-buffer/slide-26.png)
-*一个 Block 内由多个 Tile 构成；Part 4 每轮只处理一个 Tile。*
+![Block 与 Tile 的关系](assets/double-buffer/tile-partition.png)
+*一个 Kernel Block 负责一段连续元素；这段元素继续被切成多个 Tile，循环处理。*
 
 ### 2. 异步执行带来的依赖问题
 
 在 AI Core 中，搬入、向量计算、写回会发往不同硬件流水线。例如，GM 到 UB 的搬运通常由 MTE2 负责，Add 由向量流水线负责，UB 到 GM 的写回由 MTE3 负责。不同流水线能够并行，执行速度却不相同。
-
-![异步流水线的乱序风险](assets/double-buffer/slide-22.png)
-*搬运尚未完成时，计算若提前读取 UB，会得到未准备好的数据。*
 
 因此，双缓冲不是简单地“把 Buffer 数改成 2”。它还必须保证三条依赖：
 
@@ -39,8 +36,8 @@ UB -> GM:                              [写回 Tile 0]          [写回 Tile 1]
 
 底层可以通过事件同步表达这些依赖：搬运阶段记录完成事件，计算阶段等待它；计算阶段记录完成事件，写回阶段再等待它。
 
-![事件同步的作用](assets/double-buffer/slide-23.png)
-*事件将不同硬件流水线连接成有序的数据依赖，而不是强制所有流水线完全串行。*
+![搬运与计算之间的事件依赖](assets/double-buffer/event-dependency.png)
+*MTE2 完成 CopyIn 后记录事件；向量流水线等待该事件，确认 UB 数据就绪后才开始计算。*
 
 ### 3. TPipe 与 TQue 分别解决什么问题
 
@@ -59,8 +56,8 @@ TQue ：将缓冲区组织为先进先出的队列，并在阶段之间传递 Lo
 | `inQueueY` | y 的 Tile | CopyIn | Compute |
 | `outQueueZ` | z 的 Tile | Compute | CopyOut |
 
-![TQue 队列结构](assets/double-buffer/slide-27.png)
-*输入队列将搬入完成的 Tile 交给计算阶段；输出队列将计算完成的 Tile 交给写回阶段。*
+![双缓冲队列结构](assets/double-buffer/queue-depth-two.png)
+*示意图中的 Block 0、Block 1 是同一队列的两块轮换 Buffer；输入数据与输出结果分别沿各自队列流动。*
 
 队列中一个 Tile 的生命周期如下：
 
@@ -73,8 +70,8 @@ AllocTensor -> 填入数据 -> EnQue -> DeQue -> 使用 -> FreeTensor
 - `DeQue`：下游阶段取得最早准备好的 Tile。
 - `FreeTensor`：阶段用完后归还 UB，供后续 Tile 再利用。
 
-![输入阶段与计算阶段](assets/double-buffer/slide-28.png)
-*CopyIn 将 GM 中的连续元素搬入输入队列；Compute 从输入队列取出匹配的 x、y Tile。*
+![CopyIn 将数据送入输入队列](assets/double-buffer/copyin-queue.png)
+*CopyIn 从 GM 的当前 Tile 区间读取连续元素，填入一块空闲输入 Buffer；填满后再入队。*
 
 ### 4. 从单缓冲变成双缓冲
 
@@ -98,8 +95,7 @@ pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
 
 此时每条队列拥有 Buffer 0 和 Buffer 1。当前计算 Tile `i` 时，CopyIn 可以把 Tile `i + 1` 搬到另一块空闲 Buffer；当前写回 Tile `i - 1` 时，向量单元仍可继续计算 Tile `i`。
 
-![双缓冲队列深度](assets/double-buffer/slide-31.png)
-*队列深度为 2 后，两个 Buffer 轮流承接相邻 Tile。*
+`BUFFER_NUM = 2` 表示每条队列同时保留两块可轮换的 Tile Buffer，而不是将同一块 UB 重复覆盖。
 
 ### 5. UB 容量必须重新计算
 
@@ -138,8 +134,8 @@ CopyOut:            [T0] [T1] [T2] ...
 
 第一个 Tile 只能先搬入，最后一个 Tile 也必须等待写回，因此开头和结尾仍有少量空档。Tile 数较多时，中间的稳态阶段占比更高，双缓冲通常更有价值。
 
-![计算与写回阶段](assets/double-buffer/slide-29.png)
-*Compute 从输入队列取数据，完成后将 z Tile 放入输出队列，CopyOut 再写回 GM。*
+![Compute 在两个队列之间交接结果](assets/double-buffer/compute-queue.png)
+*Compute 取出已经搬入的输入 Buffer，完成 Add 后立刻归还输入 Buffer；结果 Tile 则放进输出队列等待写回。*
 
 ### 7. 代码结构如何变化
 
@@ -167,8 +163,8 @@ for (uint32_t i = 0; i < TILE_NUM; ++i) {
 
 区别在于：`CopyIn`、`Compute`、`CopyOut` 操作的是深度为 `2` 的队列。队列和运行时事件会追踪依赖，允许三个函数所发出的不同流水线任务重叠执行；不应手工让 Tile `i + 1` 覆盖 Tile `i` 的 LocalTensor。
 
-![输出队列与写回阶段](assets/double-buffer/slide-30.png)
-*输出队列让写回阶段取得已经计算完成的 z Tile，并在写回后归还 Buffer。*
+![CopyOut 将结果写回 GM](assets/double-buffer/copyout-queue.png)
+*CopyOut 从输出队列取走一个已完成的 z Tile，写回对应 GM 区间，再归还该输出 Buffer。*
 
 ### 8. 双缓冲并不总会加速
 
