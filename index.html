@@ -315,7 +315,7 @@
       const formulas = [];
       const preparedMarkdown = markdown.replace(/^\$\$\s*\r?\n([\s\S]*?)\r?\n\$\$\s*$/gm, (_, latex) => {
         const formulaIndex = formulas.push(latex.trim()) - 1;
-        return `<div class="math-block" data-formula-index="${formulaIndex}"></div>`;
+        return `\n\n<div class="math-block" data-formula-index="${formulaIndex}"></div>\n\n`;
       });
 
       content.innerHTML = marked.parse(preparedMarkdown);
