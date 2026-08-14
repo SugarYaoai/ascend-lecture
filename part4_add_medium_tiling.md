@@ -1,51 +1,36 @@
-## Part 4：Add Medium：并行度与 Tile 分块
+## Part 4：Add Medium：Tile 分块
 
-Easy Version 中，`16` 个 Block 各处理 `10752` 个元素；每个 Block 的 `x`、`y`、`z` 三段 UB 缓冲区合计为 `126 KB`，可以一次搬运、一次计算、一次写回。
+Easy 版本的长度是 `172032`，使用 `16` 个 Block 后，每个 Block 处理 `10752` 个 `float32` 元素。这一段数据对应的三块 UB 缓冲区 `x`、`y`、`z` 共占用 `126 KB`，可以一次搬入 UB 后完成计算。
 
-Medium Version 将向量长度扩大为 `N = 1048576`。
-
-数据变大以后，需要回答两个不同的问题：
-
-1. 应该启动多少个 Block，才能让更多 AI Core 参与计算？
-2. 一个 Block 分到的数据超过 UB 容量时，应该如何完成计算？
-
-第一个问题由 **Block 划分** 回答；第二个问题由 **Tile 分块** 回答。二者相关，但不能互相替代。
-
-### 实验一：改变 Block 数，观察并行度
-
-固定总元素数 `N = 1048576`，每个 Block 的工作量随 Block 数改变：
-
-| Block 数 | 每 Block 元素数 | 三段 float32 缓冲区 | 单次放入 UB 的可能性 |
-| ---: | ---: | ---: | --- |
-| 16 | 65536 | 768 KB | 不可行，必须分块 |
-| 32 | 32768 | 384 KB | 不可行，必须分块 |
-| 64 | 16384 | 192 KB | 可能可行，但 UB 余量较小 |
-| 128 | 8192 | 96 KB | 可以单次处理 |
-
-这里的 UB 用量只计算 `x`、`y`、`z` 三个 `float32` 临时张量：
+Add Medium 将向量长度扩大到：
 
 $$
-\text{UB bytes} = 3 \times \text{blockLength} \times 4
+N = 1048576
 $$
 
-因此，对于只有一次逐元素加法的 Add，`64 Block` 或 `128 Block` 很可能比 `16 Block` 加大 Tile 更适合作为性能基线：更多 Block 可被运行时调度到更多 AI Core 上，且每个 Block 的数据量更小。
+本节仍然处理 `float32` 的逐元素加法，但每个 Block 接到的数据已经无法一次放进 UB。解决办法是：一个 Block 负责一段连续的数据，再把这段数据拆成若干个 Tile，逐个搬运和计算。
 
-但是，`Block` 数也不是越多越好。物理 AI Core 数由具体设备决定，启动的 Block 超过可同时执行的 AI Core 数后，其余 Block 会分批调度。实际提交时可从运行环境提供的 `availableCoreNum` 获得可用 Core 数，并通过 profiling 比较不同 `blockNum` 的耗时。
+### 1. 为什么需要 Tile 分块
 
-### Block 和 Tile 的职责
+先保持 `16` 个 Block。此时每个 Block 负责：
 
-```text
-Block：把整个输出向量分给不同的执行任务，决定任务级并行度。
-Tile ：把一个 Block 内的数据分批放入 UB，解决片上存储容量限制。
-```
+$$
+\text{BLOCK\_LENGTH} = 1048576 / 16 = 65536
+$$
 
-例如，`64 Block × 1 Tile` 与 `16 Block × 4 Tile` 都能覆盖 `1048576` 个元素，但它们不是同一种划分：前者主要增加任务并行度，后者主要管理单个任务的片上内存。
+若把 `65536` 个元素的 `x`、`y`、`z` 全部放入 UB，所需空间为：
 
-### 实验二：固定 16 Block，必须使用 Tile
+$$
+3 \times 65536 \times 4\text{ B} = 768\text{ KB}
+$$
 
-为了学习 Tile，将 Block 数固定为 `16`。每个 Block 要处理 `1048576 / 16 = 65536` 个元素。
+这远大于一个 AI Core 可供这段程序使用的 UB 空间。GM 可以容纳完整向量，UB 则只保存当前正在计算的一小段数据；因此，不能把整个 Block 一次搬进 UB。
 
-若把这 `65536` 个元素的 `x`、`y`、`z` 一次放进 UB，需要 `768 KB`，超过可用 UB。因此将每个 Block 内的数据继续划分为 `8` 个 Tile：
+![一个 Block 被拆分为多个 Tile](assets/tiling/block-to-tiles.png)
+
+*一个 Block 的工作范围保持不变；其内部再被切成多个等长 Tile，每轮循环处理一个 Tile。*
+
+这里取：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -54,76 +39,72 @@ constexpr uint32_t TILE_LENGTH = 8192;
 constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;  // 8
 ```
 
-一个 Tile 的三个临时张量占用 `3 × 8192 × 4 B = 98304 B = 96 KB`。
+每个 Tile 的三块 `float32` 缓冲区占用：
 
-每个 Block 的计算过程变为：
+$$
+3 \times 8192 \times 4\text{ B} = 98304\text{ B} = 96\text{ KB}
+$$
 
-```text
-Block 0:
-  Tile 0: GM[0, 8192) -> UB -> Add -> GM[0, 8192)
-  Tile 1: GM[8192, 16384) -> UB -> Add -> GM[8192, 16384)
-  ...
-  Tile 7: GM[57344, 65536) -> UB -> Add -> GM[57344, 65536)
+所以，一个 Block 中的 `65536` 个元素被拆成 `8` 个 Tile；每次只让一个 Tile 占用 UB。
 
-Block 1:
-  从全局下标 65536 开始，重复相同的 8 次 Tile 处理
-```
+### 2. 一个 Block 怎样处理多个 Tile
 
-### Tile 的全局偏移
-
-当前 Block 的起点为：
+`block_idx` 决定当前 Block 在完整向量中的起点，`tileIdx` 决定当前处理该 Block 内的哪一小段：
 
 ```cpp
-uint32_t blockOffset = block_idx * BLOCK_LENGTH;
-```
+const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
 
-第 `tileIdx` 个 Tile 相对于当前 Block 的偏移为：
-
-```cpp
-uint32_t tileOffset = tileIdx * TILE_LENGTH;
-```
-
-因此，一个 Tile 的 GM 地址就是 `GM 起始地址 + blockOffset + tileOffset`。`xGm`、`yGm`、`zGm` 已经偏移到当前 Block 的起点后，循环内只需额外加上 `tileOffset`。
-
-### C API 的 Tile 化实现
-
-Part 4 使用 C API，避免提前引入 `TPipe`、`TQue` 与队列生命周期。每个 Block 只声明三块固定大小的 UB 数组：`xLocal`、`yLocal`、`zLocal`。
-
-```cpp
-__ubuf__ float xLocal[TILE_LENGTH];
-__ubuf__ float yLocal[TILE_LENGTH];
-__ubuf__ float zLocal[TILE_LENGTH];
-```
-
-这三块数组合计占用 `96 KB`。Tile 循环中的每一轮都严格按下面的串行顺序执行：
-
-```text
-CopyIn:  GM -> UB，搬入当前 Tile 的 x、y
-Compute: UB 内执行向量 Add
-CopyOut: UB -> GM，写回当前 Tile 的 z
-```
-
-```cpp
 for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
-    uint32_t tileOffset = tileIdx * TILE_LENGTH;
-
-    asc_copy_gm2ub(xLocal, xGm + tileOffset, TILE_LENGTH * sizeof(float));
-    asc_copy_gm2ub(yLocal, yGm + tileOffset, TILE_LENGTH * sizeof(float));
-    asc_sync();
-
-    asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
-    asc_sync();
-
-    asc_copy_ub2gm(zGm + tileOffset, zLocal, TILE_LENGTH * sizeof(float));
-    asc_sync();
+    const uint32_t tileOffset = tileIdx * TILE_LENGTH;
+    // 当前 Tile 的 GM 起点：GM 基址 + blockOffset + tileOffset
 }
 ```
 
-`asc_sync` 保证前一阶段完成后，下一阶段才能读取对应的数据。这是最直观的 Tile 版本：同一时刻只处理一个 Tile，没有任何数据搬运与计算的重叠。
+以 `Block 0` 为例，它的工作范围是 `[0, 65536)`；循环会依次处理：
 
-### 完整 kernel.asc
+```text
+Tile 0: [0, 8192)
+Tile 1: [8192, 16384)
+...
+Tile 7: [57344, 65536)
+```
 
-下面是 Add Medium 的完整 C API 版本。它固定处理长度为 `1048576` 的 `float32` 向量；每个 Block 处理 `65536` 个元素，并在 Block 内循环处理 `8` 个 Tile。
+每一轮都执行相同的三步：从 GM 读入 `x`、`y` 到 UB，在 UB 中完成 Add，再将 `z` 写回 GM。
+
+```cpp
+asc_copy_gm2ub(xLocal, xGm + tileOffset, TILE_LENGTH * sizeof(float));
+asc_copy_gm2ub(yLocal, yGm + tileOffset, TILE_LENGTH * sizeof(float));
+asc_sync();
+
+asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
+asc_sync();
+
+asc_copy_ub2gm(zGm + tileOffset, zLocal, TILE_LENGTH * sizeof(float));
+asc_sync();
+```
+
+同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
+
+### 3. Tile 分块后，为什么还要关注 Block 数量
+
+Tile 解决的是“一个 Block 的数据如何装进 UB”的问题；Block 数量决定的是“这次 Kernel 提交了多少独立任务，运行时有多少任务可以调度到 AI Core 上”。两者分别控制片上存储与任务级并行度。
+
+对于长度为 `1048576` 的 Add，改变 Block 数会改变每个 Block 的工作量：
+
+| Block 数 | 每个 Block 元素数 | 三块完整缓冲区的大小 |
+| ---: | ---: | ---: |
+| 16 | 65536 | 768 KB |
+| 32 | 32768 | 384 KB |
+| 64 | 16384 | 192 KB |
+| 128 | 8192 | 96 KB |
+
+更多 Block 会让单个 Block 变小，也可能让更多 AI Core 同时获得工作；但并不是固定选择最大的数字。实际设备同时可运行的 AI Core 数有限，超过后其余 Block 会等待调度；过小的 Block 还会增加任务调度与启动开销。`availableCoreNum` 可以提供当前环境的可用 Core 数，最终需要用 profiling 比较不同 `NUM_BLOCKS` 的实际耗时。
+
+本题故意保留 `16` 个 Block：这样每个 Block 的 `65536` 个元素明显超出 UB 一次可容纳的范围，Tile 循环成为代码中不可省略的一部分。
+
+### 4. 完整 kernel.asc
+
+下面的实现固定处理长度为 `1048576` 的 `float32` 向量。每个 Block 处理 `65536` 个元素，并在 Block 内循环完成 `8` 次 Tile 计算。
 
 ```cpp
 #include <cstdint>
@@ -183,9 +164,9 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 }
 ```
 
-### 本节结论
+### 本节要点
 
-- Add 的 Block 数应先作为性能参数探索，不能机械固定为 16。
-- 对单次 Add，增加 Block 数可以降低每个 Block 的 UB 占用，并提高并行机会。
-- 当固定 Block 数后，每个 Block 的工作数据仍超过 UB 时，Tile 是必需的。
-- 本节的 Tile 按 `CopyIn -> Compute -> CopyOut` 串行完成；下一节再使用 `TPipe` 与 `TQue` 建立双缓冲流水线。
+- Tile 把一个 Block 的长数据段拆成可放入 UB 的短数据段。
+- `blockOffset` 选择当前 Block 的工作范围，`tileOffset` 选择该范围内当前处理的 Tile。
+- Tile 循环反复执行 GM 到 UB、UB 内 Add、UB 到 GM，并复用同一组 UB 数组。
+- Block 数量与 Tile 长度是两个独立参数：前者影响任务级并行度，后者决定单次 UB 占用。
