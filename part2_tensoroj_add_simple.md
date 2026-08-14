@@ -189,14 +189,3 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
-
-## 提交前检查
-
-提交前，确认 `kernel.asc` 包含以下四项：
-
-1. `#include "c_api/asc_simd.h"`。
-2. `NUM_BLOCKS = 16` 与 `BLOCK_LENGTH = 10752`。
-3. `GM_ADDR` 已转换为 `__gm__ float*` 后参与地址计算。
-4. 启动语句为 `add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);`。
-
-题目模板会在 Host 侧完成输入数据复制、执行同步、结果回传和精度校验。`kernel.asc` 只负责定义 Device 端计算和启动该计算。
