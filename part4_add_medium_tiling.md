@@ -26,9 +26,9 @@ $$
 
 这远大于一个 AI Core 可供这段程序使用的 UB 空间。GM 可以容纳完整向量，UB 则只保存当前正在计算的一小段数据；因此，不能把整个 Block 一次搬进 UB。
 
-![一个 Block 被拆分为多个 Tile](assets/tiling/block-to-tiles.png)
+![16 个 Block 下，一个 Block 为什么仍需要切 Tile](assets/tiling/why-tile-16-blocks.png)
 
-*一个 Block 的工作范围保持不变；其内部再被切成多个等长 Tile，每轮循环处理一个 Tile。*
+*16 个 Block 将完整向量均分为 16 段；每段的三块完整缓冲区合计为 768 KB，必须继续拆成 Tile 才能进入 UB。*
 
 这里取：
 
