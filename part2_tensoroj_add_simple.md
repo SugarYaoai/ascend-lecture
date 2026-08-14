@@ -50,9 +50,9 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 输入总长度为 `172032`。启动 16 个 Block 时，每个 Block 处理：
 
-```math
+$$
 \text{BLOCK\_LENGTH} = 172032 / 16 = 10752
-```
+$$
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -62,9 +62,9 @@ constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 
 每个 Block 用三段 UB 分别保存输入 `x`、输入 `y` 和输出 `z`：
 
-```math
+$$
 10752 \times 4\text{ B} \times 3 = 129024\text{ B} = 126\text{ KB}
-```
+$$
 
 这三个缓冲区位于当前 AI Core 的 UB 中。UB 总容量虽然为 `256 KB`，但还需要为系统预留区、运行时资源等留下空间，因此这里使用 `126 KB`，而不是将静态数组配置到接近 `256 KB`。
 
