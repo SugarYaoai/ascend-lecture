@@ -40,24 +40,21 @@ $$
 | Unified Buffer（UB） | 单个 AI Core 内部的片上存储 | 保存当前 AI Core 正在计算的一小段输入和输出，访问速度远高于 GM。 |
 | AI Core | NPU 的计算核心 | 执行一个或多个 Block 中的 Kernel 代码。 |
 
-一次 Kernel 启动可以配置多个 Block。NPU 将 Block 调度到 AI Core 上执行；当有足够的空闲 AI Core 时，多个 Block 可以并行运行。这里启动 16 个 Block，每个 Block 处理 `172032 / 16 = 10752` 个元素：
+一次 Kernel 启动可以配置多个 Block。运行时将这些 Block 调度到可用的 AI Core 上；多个 Block 可以并行执行，但不需要假设某个 Block 永远绑定某个固定 Core。
 
-```text
-CPU / Host
-  Host Memory: x, y
-        |
-        | aclrtMemcpy
-        v
-NPU
-  Global Memory: x, y, z
-        |
-        | 16 个 Block 分别处理 16 段数据
-        v
-  AI Core 0  <- Block 0: 元素 [0, 10752)
-  AI Core 1  <- Block 1: 元素 [10752, 21504)
-  ...
-  AI Core 15 <- Block 15: 元素 [161280, 172032)
-```
+本例将长度为 `172032` 的向量均匀分成 `16` 段，每个 Block 处理 `10752` 个元素。对编号为 `block_idx` 的 Block：
+
+$$
+\text{start} = block\_idx \times 10752, \qquad
+\text{end} = \text{start} + 10752
+$$
+
+| Block 编号 | 负责的元素下标范围 |
+| ---: | --- |
+| `0` | `[0, 10752)` |
+| `1` | `[10752, 21504)` |
+| `...` | `...` |
+| `15` | `[161280, 172032)` |
 
 ## 一个 Block 内部的 Add 计算
 
