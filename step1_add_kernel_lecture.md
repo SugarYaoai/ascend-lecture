@@ -28,6 +28,11 @@ $$
 
 在昇腾算子开发中，输入数据的存放位置与计算发生的位置并不相同：Host 负责准备数据和启动计算，NPU 上的 AI Core 负责执行 Kernel。理解 Host Memory、Global Memory、UB 和 AI Core 的分工，是理解昇腾算子开发的起点。
 
+![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
+*Host Memory 保存 CPU 侧输入输出；数据先复制到设备侧 GM，再由各个 AI Core 将自己负责的数据搬入 UB 计算。*
+
+图中的关键路径是 `Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。Host Memory 不会被 Kernel 直接访问；同样，AI Core 的向量计算也不会直接在 GM 上完成，而是先将当前 Block 的局部数据搬入本 Core 的 UB。
+
 | 名称 | 所在位置 | 作用 |
 | --- | --- | --- |
 | Host Memory（HM） | CPU 一侧 | 保存 Host 程序准备的输入数据和取回的输出结果。 |
