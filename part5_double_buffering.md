@@ -1,6 +1,6 @@
-## Part 5：Add Medium：双缓冲与 TQue 流水线
+### 第五节 Add Medium：双缓冲与 TQue 流水线
 
-Part 4 中，每个 Block 依次处理 8 个 Tile。一个 Tile 的执行顺序是：
+第四节中，每个 Block 依次处理 8 个 Tile。一个 Tile 的执行顺序是：
 
 ```text
 搬入 Tile i -> 计算 Tile i -> 写回 Tile i -> 搬入 Tile i + 1
@@ -8,9 +8,9 @@ Part 4 中，每个 Block 依次处理 8 个 Tile。一个 Tile 的执行顺序�
 
 这个版本结果正确、结构清晰，但有一个明显空档：向量计算单元在等待下一块数据从 GM 搬入 UB 时会空闲；搬运单元在计算时也可能空闲。双缓冲的目标不是改变 Add 的结果，而是让这些硬件阶段尽可能同时工作。
 
-### 1. 单缓冲为什么会出现空档
+#### 一、单缓冲为什么会出现空档
 
-Part 4 为一个 Tile 准备了三块 UB：`xLocal`、`yLocal`、`zLocal`。由于只有这一组缓冲区，Tile `i` 还在计算时，Tile `i + 1` 没有地方安全地搬入；否则会覆盖正在被计算读取的 `xLocal`、`yLocal`。
+第四节为一个 Tile 准备了三块 UB：`xLocal`、`yLocal`、`zLocal`。由于只有这一组缓冲区，Tile `i` 还在计算时，Tile `i + 1` 没有地方安全地搬入；否则会覆盖正在被计算读取的 `xLocal`、`yLocal`。
 
 ```text
 时间 ->
@@ -24,7 +24,7 @@ UB -> GM:                              [写回 Tile 0]          [写回 Tile 1]
 ![Block 与 Tile 的关系](assets/double-buffer/tile-partition.png)
 *一个 Kernel Block 负责一段连续元素；这段元素继续被切成多个 Tile，循环处理。*
 
-### 2. 异步执行带来的依赖问题
+#### 二、异步执行带来的依赖问题
 
 在 AI Core 中，搬入、向量计算、写回会发往不同硬件流水线。例如，GM 到 UB 的搬运通常由 MTE2 负责，Add 由向量流水线负责，UB 到 GM 的写回由 MTE3 负责。不同流水线能够并行，执行速度却不相同。
 
@@ -39,7 +39,7 @@ UB -> GM:                              [写回 Tile 0]          [写回 Tile 1]
 ![搬运与计算之间的事件依赖](assets/double-buffer/event-dependency.png)
 *MTE2 完成 CopyIn 后记录事件；向量流水线等待该事件，确认 UB 数据就绪后才开始计算。*
 
-### 3. TPipe 与 TQue 分别解决什么问题
+#### 三、TPipe 与 TQue 分别解决什么问题
 
 Ascend C 的 C++ API 用 `TPipe` 管理 UB 空间，用 `TQue` 管理同一类 Tile 缓冲区的生产与消费顺序。
 
@@ -73,7 +73,7 @@ AllocTensor -> 填入数据 -> EnQue -> DeQue -> 使用 -> FreeTensor
 ![CopyIn 将数据送入输入队列](assets/double-buffer/copyin-queue.png)
 *CopyIn 从 GM 的当前 Tile 区间读取连续元素，填入一块空闲输入 Buffer；填满后再入队。*
 
-### 4. 从单缓冲变成双缓冲
+#### 四、从单缓冲变成双缓冲
 
 单缓冲时，每条队列深度为 `1`：
 
@@ -97,9 +97,9 @@ pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
 
 `BUFFER_NUM = 2` 表示每条队列同时保留两块可轮换的 Tile Buffer，而不是将同一块 UB 重复覆盖。
 
-### 5. UB 容量必须重新计算
+#### 五、UB 容量必须重新计算
 
-Part 4 的 `TILE_LENGTH = 8192`，一个 `float32` Tile 为：
+第四节的 `TILE_LENGTH = 8192`，一个 `float32` Tile 为：
 
 $$
 8192 \times 4\ \text{B} = 32\ \text{KB}
@@ -113,7 +113,7 @@ $$
 
 这比单缓冲的 `96 KB` 多一倍。双缓冲能换取流水线重叠，但不能超过设备和运行时可用的 UB 预算；实际算子还要为对齐、临时结果和系统保留空间留出余量。
 
-### 6. 稳态流水线中，三个阶段同时工作
+#### 六、稳态流水线中，三个阶段同时工作
 
 设当前处于稳定阶段，三个硬件流水线处理不同 Tile：
 
@@ -137,9 +137,9 @@ CopyOut:            [T0] [T1] [T2] ...
 ![Compute 在两个队列之间交接结果](assets/double-buffer/compute-queue.png)
 *Compute 取出已经搬入的输入 Buffer，完成 Add 后立刻归还输入 Buffer；结果 Tile 则放进输出队列等待写回。*
 
-### 7. 代码结构如何变化
+#### 七、代码结构如何变化
 
-Part 4 的 C API 代码适合说明 Tile 的串行路径。Part 5 切换到 C++ API，不是为了算子注册，而是为了使用 `TPipe + TQue` 描述 UB 的多缓冲与阶段交接。
+第四节的 C API 代码适合说明 Tile 的串行路径。第五节切换到 C++ API，不是为了算子注册，而是为了使用 `TPipe + TQue` 描述 UB 的多缓冲与阶段交接。
 
 单缓冲的外层逻辑是：
 
@@ -166,7 +166,7 @@ for (uint32_t i = 0; i < TILE_NUM; ++i) {
 ![CopyOut 将结果写回 GM](assets/double-buffer/copyout-queue.png)
 *CopyOut 从输出队列取走一个已完成的 z Tile，写回对应 GM 区间，再归还该输出 Buffer。*
 
-### 8. 双缓冲并不总会加速
+#### 八、双缓冲并不总会加速
 
 双缓冲主要隐藏的是搬运与计算的等待时间。效果取决于三个阶段的耗时：
 
@@ -178,12 +178,12 @@ for (uint32_t i = 0; i < TILE_NUM; ++i) {
 | Tile 数很少 | 启动和收尾占比高，收益可能不明显 |
 | UB 预算不足 | 无法使用深度为 2 的队列，需要减小 Tile 或保持单缓冲 |
 
-因此，优化后应通过 profiling 比较 Part 4 与 Part 5 的 Kernel 耗时，而不是只依据代码结构判断快慢。
+因此，优化后应通过 profiling 比较第四节与第五节的 Kernel 耗时，而不是只依据代码结构判断快慢。
 
-### 本节结论
+#### 九、本节结论
 
 - Tile 解决“一个 Block 的数据能否放入 UB”；双缓冲解决“搬运与计算能否同时推进”。
 - `TQue` 本身是队列抽象；将队列深度设为 `2`，才为相邻 Tile 提供两套可轮换的 UB Buffer。
 - 正确性来自队列与事件表达的数据依赖，不来自盲目并行。
-- Part 5 保持直接启动 Kernel 的形式；没有引入算子注册。
+- 第五节保持直接启动 Kernel 的形式；没有引入算子注册。
 - 下一步可以将这套双缓冲结构用于更复杂的算子，观察不同 Tile 长度、不同 Buffer 深度对性能的影响。

@@ -1,4 +1,4 @@
-## Part 3：TensorOJ C++ API 实战
+### 第三节 TensorOJ C++ API 实战
 
 本节继续完成 Add Simple：两个长度为 `172032` 的 `float32` 向量逐元素相加。计算参数仍保持不变：
 
@@ -10,7 +10,7 @@ constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 
 这一节从 C API 切换到 C++ API，并继续处理一个固定长度的 Block。
 
-### C API 与 C++ API 的对应
+#### 一、C API 与 C++ API 的对应
 
 | 任务 | C API | 本节的 C++ API |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 
 C++ API 没有改变 Add 的数据路径，只是把“地址”“片上张量”“搬运”“计算”表达成更明确的对象和函数调用。
 
-### 1. 将当前 Block 的 GM 地址绑定为 GlobalTensor
+#### 二、将当前 Block 的 GM 地址绑定为 GlobalTensor
 
 `GM_ADDR` 是 TensorOJ 运行时传入的设备地址。当前 Block 先根据 `block_idx` 计算自己的起始位置，再把这段地址绑定到三个 `GlobalTensor<float>`：
 
@@ -38,7 +38,7 @@ zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + offset, BLOCK_LENGTH);
 
 之后 `xGm`、`yGm`、`zGm` 分别代表当前 Block 要读写的三段 Global Memory，不再需要在每个数据搬运调用中手写地址偏移。
 
-### 2. 用 LocalMemAllocator 直接申请三块 UB
+#### 三、用 LocalMemAllocator 直接申请三块 UB
 
 `LocalMemAllocator<AscendC::Hardware::UB>` 直接从当前 AI Core 的 UB 中申请三块局部张量，分别保存 `x`、`y` 和 `z`：
 
@@ -61,7 +61,7 @@ $$
 
 局部张量只服务当前 Kernel 的这一次固定长度计算。
 
-### 3. 按顺序搬入、计算和写回
+#### 四、按顺序搬入、计算和写回
 
 ```cpp
 AscendC::DataCopy(xLocal, xGm, BLOCK_LENGTH);
@@ -77,7 +77,7 @@ AscendC::PipeBarrier<PIPE_ALL>();
 
 `PipeBarrier<PIPE_ALL>()` 与 C API 的 `asc_sync()` 作用相同：前一阶段完成前，后一阶段不能读取其结果。此处每个阶段都完成后才开始下一个阶段，因此这是单缓冲、串行的执行流程。
 
-### 完整 kernel.asc
+#### 五、完整 kernel.asc
 
 下面代码可以直接放入 TensorOJ 的 `kernel.asc`。它采用 C++ API 的 `GlobalTensor`、`LocalTensor` 和 `DataCopy`。
 

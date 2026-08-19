@@ -1,10 +1,10 @@
-# 动手学昇腾算子开发
+## 第二章 Add 算子：从基础 Kernel 到性能优化
+
+### 第一节 固定长度 Add Kernel
 
 使用 Ascend C SIMD 的 **C API** 实现 Add 算子。
 
-## 第一节：固定长度 Add Kernel
-
-## Add 算子功能介绍
+#### 一、Add 算子功能介绍
 
 输入为两个形状相同的一维 `float32` 向量 `x`、`y`，输出为向量 `z`。计算逻辑为逐元素相加：
 
@@ -24,7 +24,7 @@ $$
 
 输入长度固定为 `172032`，不考虑其他长度、广播或多数据类型情形。
 
-## 计算架构
+#### 二、计算架构
 
 在昇腾算子开发中，输入数据的存放位置与计算发生的位置并不相同：Host 负责准备数据和启动计算，NPU 上的 AI Core 负责执行 Kernel。理解 Host Memory、Global Memory、UB 和 AI Core 的分工，是理解昇腾算子开发的起点。
 
@@ -51,7 +51,7 @@ Block 1 : 元素 [10752, 21504)
 Block 15: 元素 [161280, 172032)
 ```
 
-## 一个 Block 内部的 Add 计算
+#### 三、一个 Block 内部的 Add 计算
 
 Host 先将输入从 Host Memory 复制到 Global Memory。随后 Device 端的 Kernel 只在 Global Memory 与 AI Core 的 UB 之间移动数据：一个 Block 从 GM 读取 `x` 和 `y`，将它们搬入 UB，在 UB 中完成 `x + y`，再把结果写回 GM 中的 `z`。
 
@@ -88,7 +88,7 @@ asc_sync();
 
 `asc_sync()` 保证前一阶段的操作完成后，再进入下一阶段。
 
-## Device 端 Kernel
+#### 四、Device 端 Kernel
 
 后缀名为 `*.asc` 的文件可以同时包含 Device 端和 Host 端代码。先看 Device 端的完整 Kernel：
 
@@ -171,7 +171,7 @@ asc_sync();
 
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度单位是字节，因此参数为 `block_length * sizeof(float)`；`asc_add` 的长度单位是元素个数，因此参数直接是 `block_length`。
 
-## Host 端调用 Kernel
+#### 五、Host 端调用 Kernel
 
 ```cpp
 #include <acl/acl.h>
@@ -287,7 +287,7 @@ aclrtMemcpy(zHost, totalByteSize, zDevice, totalByteSize,
             ACL_MEMCPY_DEVICE_TO_HOST);
 ```
 
-## UB 容量补充
+#### 六、UB 容量补充
 
 Atlas A2 训练系列产品（Ascend 910B）中，单个 AI Core 的 UB 容量可按约 `256 KB` 理解。一个 Block 需要在 UB 中同时保存 `x_local`、`y_local`、`z_local` 三个数组：
 
@@ -300,7 +300,7 @@ Atlas A2 训练系列产品（Ascend 910B）中，单个 AI Core 的 UB 容量�
 
 UB 总容量为 `256 KB`，但不能将静态缓冲区配置到接近该上限：运行时还需要保留空间。这里三段 UB 缓冲区总计 `126 KB`，可为系统预留区及运行时资源保留充足余量。每个 Block 将自己负责的 10752 个 `float32` 输入元素及其结果同时放入 UB 中完成计算。
 
-## 数据流向补充
+#### 七、数据流向补充
 
 计算路径为：
 
@@ -323,7 +323,7 @@ Device Global Memory
 Host Memory: zHost
 ```
 
-## 算子编译与运行
+#### 八、算子编译与运行
 
 将 `add_172032.asc` 放入工程目录后，可使用 CMake 编译：
 
@@ -353,7 +353,7 @@ make -j
 
 `--npu-arch` 必须与实际使用的 NPU 架构匹配。`dav-2201` 对应 Atlas A2 / Ascend 910B 系列。
 
-## 参考资料
+#### 九、参考资料
 
 - [基于 SIMD 编程的 Add 算子快速入门](https://asc.gitcode.com/guide/%E5%85%A5%E9%97%A8%E6%95%99%E7%A8%8B/%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8/%E5%9F%BA%E4%BA%8ESIMD%E7%BC%96%E7%A8%8B/Add%E7%AE%97%E5%AD%90%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8.html)
 - `Add(1).zip` 中的题目说明：`Add/Add.md`

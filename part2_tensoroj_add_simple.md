@@ -1,4 +1,4 @@
-## Part 2：TensorOJ C API 实战
+### 第二节 TensorOJ C API 实战
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。题目提供了工程模板；提交时只需要修改 `kernel.asc`，`main.asc` 负责准备输入、调用 `run_kernel`、等待执行结束并校验输出。
 
@@ -12,7 +12,7 @@
 | 输入取值范围 | `[-1.0, 1.0]` |
 | 可修改文件 | `kernel.asc` |
 
-## 题目模板提供的入口
+#### 一、题目模板提供的入口
 
 模板已经定义并调用 `run_kernel`：
 
@@ -36,7 +36,7 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 `availableCoreNum` 是运行时查询得到的可用向量核数。这个题的实现启动 16 个 Block，要求设备至少有一个可用向量核；Block 由运行时调度到 AI Core 执行。
 
-## 引入 SIMD C API
+#### 二、引入 SIMD C API
 
 模板默认包含 `kernel_operator.h`，它主要提供 Ascend C 的 C++ API。这里使用指针风格 SIMD C API，因此还需要加入：
 
@@ -46,7 +46,7 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
 
-## 配置 Block
+#### 三、配置 Block
 
 输入总长度为 `172032`。启动 16 个 Block 时，每个 Block 处理：
 
@@ -76,7 +76,7 @@ $$
 
 此时每个 Block 都会在自己所在的 AI Core 上申请约 `252 KB` 的 UB，几乎占满 `256 KB`。即使 8 个 Block 被调度到 8 个不同的 AI Core，问题也不是 8 个 Core 共享同一块 UB；而是每个 Core 的单独 UB 申请都没有给运行时留下足够空间，Kernel 可能在执行时失败。将 Block 数改为 `16` 后，每个 Block 的三段缓冲区回到 `126 KB`，才保留了可用余量。
 
-## 实现 Device 端 Kernel
+#### 四、实现 Device 端 Kernel
 
 Kernel 的参数仍使用 `GM_ADDR`，因为这是题目模板传入的地址类型。`GM_ADDR` 在该模板中底层是字节指针，因此先转换成 `__gm__ float*`，再按 `block_idx` 计算当前 Block 的起始位置。
 
@@ -114,7 +114,7 @@ x[32256:43008] + y[32256:43008] -> z[32256:43008]
 
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度参数以字节为单位；`asc_add` 的长度参数以元素个数为单位。
 
-## 在 run_kernel 中启动 Kernel
+#### 五、在 run_kernel 中启动 Kernel
 
 在启动前检查输入输出的数量、类型和长度，可以避免错误的张量规格进入固定长度的 Kernel：
 
@@ -144,7 +144,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
 
-## 完整 kernel.asc
+#### 六、完整 kernel.asc
 
 ```cpp
 #include <cstdint>

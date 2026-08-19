@@ -89,6 +89,15 @@
       line-height: 1.45;
     }
     #toc a.level-3 { padding-left: 22px; font-size: 13px; }
+    #toc a.level-4 { padding-left: 36px; font-size: 12px; }
+    #toc a.chapter-heading {
+      margin-top: 16px;
+      padding: 10px;
+      color: #0d315e;
+      background: #e8f1fb;
+      border-left: 4px solid #0a66c2;
+      font-weight: 700;
+    }
     #toc a.part-heading {
       margin-top: 12px;
       padding: 9px 10px;
@@ -254,6 +263,7 @@
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js"></script>
   <script>
     const sourceFiles = [
+      "./chapter1_overview.md",
       "./step1_add_kernel_lecture.md",
       "./part2_tensoroj_add_simple.md",
       "./part3_tensoroj_cpp_api.md",
@@ -270,16 +280,15 @@
     }
 
     function buildToc() {
-      const headings = [...content.querySelectorAll("h2, h3")];
+      const headings = [...content.querySelectorAll("h2, h3, h4")];
       headings.forEach((heading, index) => {
         heading.id = slugify(heading.textContent, index);
         const link = document.createElement("a");
         link.href = `#${heading.id}`;
         link.textContent = heading.textContent;
         link.className = `level-${heading.tagName.slice(1)}`;
-        if (heading.textContent.startsWith("Part ") || /^第[一二三四五六七八九十]+节/.test(heading.textContent)) {
-          link.classList.add("part-heading");
-        }
+        if (heading.tagName === "H2") link.classList.add("chapter-heading");
+        if (heading.tagName === "H3") link.classList.add("part-heading");
         toc.appendChild(link);
       });
 
