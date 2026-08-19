@@ -1,6 +1,8 @@
 ### 第三节 TensorOJ 实战：用 C API 实现 Add
 
-本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。题目提供了工程模板；提交时只需要修改 `kernel.asc`，`main.asc` 负责准备输入、调用 `run_kernel`、等待执行结束并校验输出。
+上一节手写了 Host 与 Device 两侧的完整调用过程，目的是看清一次 Kernel 启动需要哪些环节。实际练习时，常见的形式是由题目框架承担 Host 端的固定工作，开发者专注实现 Device 端。
+
+本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 是在线评测环境：它用隐藏测试数据调用提交的代码，并根据输出判断正确性。题目提供工程模板；提交时只需要修改 `kernel.asc`，`main.asc` 负责准备输入、调用 `run_kernel`、等待执行结束并校验输出。
 
 本题是一个固定规格的 easy version：
 
@@ -14,7 +16,7 @@
 
 #### 一、题目模板提供的入口
 
-模板已经定义并调用 `run_kernel`：
+模板已经定义并调用 `run_kernel`。这就是题目与提交代码之间的**接口约定**：函数签名不能随意修改，函数体负责根据输入元信息启动自己的 Device 端 Kernel。
 
 ```cpp
 extern "C" void run_kernel(
@@ -27,7 +29,7 @@ extern "C" void run_kernel(
 }
 ```
 
-`x`、`y`、`z` 是 Device 侧 Global Memory 的地址。`info_x`、`info_y`、`info_z` 描述张量的形状与数据类型；例如：
+`x`、`y`、`z` 的类型是 `GM_ADDR`，即运行时传入的 Device 侧 Global Memory 地址。`info_x`、`info_y`、`info_z` 是张量元信息（metadata），描述张量的形状与数据类型；例如：
 
 ```cpp
 info_x.tensors[0].shape[0]  // 输入 x 的第 0 维长度
@@ -38,7 +40,7 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 #### 二、引入 SIMD C API
 
-模板默认包含 `kernel_operator.h`，它主要提供 Ascend C 的 C++ API。这里使用指针风格 SIMD C API，因此还需要加入：
+上一节中直接操作 `__gm__`、`__ubuf__` 指针和 `asc_*` 函数的写法，就是指针风格 SIMD C API。模板默认包含 `kernel_operator.h`，它主要提供 Ascend C 的 C++ API；这里要继续使用 C API，因此还需要加入：
 
 ```cpp
 #include "c_api/asc_simd.h"
@@ -48,7 +50,7 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 #### 三、配置 Block
 
-输入总长度为 `172032`。启动 16 个 Block 时，每个 Block 处理：
+输入总长度为 `172032`。这里沿用上一节的 16 个 Block：目标是先适应题目模板，而不是重新搜索最佳并行度。启动 16 个 Block 时，每个 Block 处理：
 
 $$
 \text{BLOCK\_LENGTH} = 172032 / 16 = 10752

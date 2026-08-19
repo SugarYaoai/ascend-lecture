@@ -1,6 +1,8 @@
 ### 第二节 编写第一个 Add Kernel
 
-使用 Ascend C SIMD 的 **C API** 实现 Add 算子。
+第一节说明了数据与计算单元的分工。本节把这些概念落到第一份可运行代码：Host 提交一个 Kernel，多个 Block 分别处理输入的一段数据，再由 AI Core 完成向量加法。
+
+这里使用 Ascend C SIMD 的 **C API**。C API 是以指针和函数调用表达设备计算的接口风格；SIMD（Single Instruction, Multiple Data）表示一条向量指令可以同时处理一批连续元素。
 
 #### 一、Add 算子功能介绍
 
@@ -21,6 +23,8 @@ $$
 | `x`、`y` 取值范围 | `[-1.0, 1.0]` |
 
 输入长度固定为 `172032`，不考虑其他长度、广播或多数据类型情形。
+
+`float32` 是 32 位单精度浮点数，每个元素占 `4 B`。长度和数据类型在本节预先确定，因此可以先把注意力放在数据如何被划分、搬运和计算上。
 
 #### 二、计算架构
 
@@ -139,9 +143,9 @@ __gm__ float* y_gm = y + block_idx * block_length;
 __gm__ float* z_gm = z + block_idx * block_length;
 ```
 
-`__vector__ __global__` 表示这是在向量计算单元执行的核函数。这里 `TOTAL_LENGTH = 172032`、`NUM_BLOCKS = 16`，因此 `block_length = 10752`。
+`__vector__ __global__` 是 Ascend C 的语言扩展：`__global__` 声明可由 Host 启动的 Device 端 Kernel，`__vector__` 表示该 Kernel 在 AI Core 的向量计算单元上执行。这里 `TOTAL_LENGTH = 172032`、`NUM_BLOCKS = 16`，因此 `block_length = 10752`。
 
-`block_idx` 的取值为 `0` 到 `15`。例如，`block_idx = 3` 时，三个指针都会偏移 `3 × 10752` 个元素，因此该 Block 处理 `x[32256:43008]`、`y[32256:43008]`，并将结果写到 `z[32256:43008]`。
+`block_idx` 是编译器提供的内置系统变量，不需要声明或作为参数传入。运行时启动 16 个 Block 时，会让它们分别读到 `0` 到 `15` 的逻辑编号。它表示当前 Block 的编号，而不是固定 AI Core 的物理编号。例如，`block_idx = 3` 时，三个指针都会偏移 `3 × 10752` 个元素，因此该 Block 处理 `x[32256:43008]`、`y[32256:43008]`，并将结果写到 `z[32256:43008]`。
 
 随后在 UB 中声明输入和输出缓冲区：
 
@@ -170,6 +174,8 @@ asc_sync();
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度单位是字节，因此参数为 `block_length * sizeof(float)`；`asc_add` 的长度单位是元素个数，因此参数直接是 `block_length`。
 
 #### 五、Host 端调用 Kernel
+
+Device 端只描述“一个 Block 拿到数据后怎样计算”；Host 端负责准备数据并发起这次执行。`Stream` 是运行时维护的任务序列：同一 Stream 中的操作按提交顺序建立依赖，Host 可在之后同步等待它们完成。
 
 ```cpp
 #include <acl/acl.h>
@@ -275,7 +281,7 @@ Kernel 启动语句如下：
 add_custom<<<NUM_BLOCKS, nullptr, stream>>>(xDevice, yDevice, zDevice);
 ```
 
-其中 `NUM_BLOCKS = 16`，因此 NPU 启动 16 个 Block；动态 UB 参数为 `nullptr`，因为 Kernel 内已经以 `__ubuf__` 声明了静态 UB 数组。
+其中 `NUM_BLOCKS = 16`，因此 NPU 启动 16 个 Block；`nullptr` 是当前启动接口中的保留配置项，本例不额外配置它；`stream` 指定任务提交的运行时流。尖括号后的 `(xDevice, yDevice, zDevice)` 才是 Kernel 实际接收的三个 GM 地址。
 
 执行结束后，Host 端同步并取回结果：
 

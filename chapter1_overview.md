@@ -12,7 +12,20 @@ $$
 z_i = x_i + y_i
 $$
 
-CPU 上的 Host 程序负责准备数据、申请设备内存并提交任务；NPU 上的 AI Core 负责实际计算。数据会经过 Host Memory、设备侧 Global Memory（GM）和 AI Core 内部的 Unified Buffer（UB）。Kernel 是运行在 AI Core 上的程序：它从 GM 搬入当前需要的数据，在 UB 中执行向量指令，再把结果写回 GM。
+CPU 上的 Host 程序负责准备数据、申请设备内存并提交任务；NPU 上的 AI Core 负责实际计算。数据会经过 Host Memory、设备侧 Global Memory（GM）和 AI Core 内部的 Unified Buffer（UB）。
+
+这里先建立本书会反复使用的几个术语：
+
+- **张量（Tensor）**：按形状组织的一组数。本书先从一维张量，即向量，开始学习。
+- **算子（Operator）**：一个明确的张量计算规则及其设备侧实现；Add 的规则就是对应位置相加。
+- **Kernel（核函数）**：运行在 NPU 设备侧的程序，是算子真正执行计算的部分。
+- **NPU 与 AI Core**：NPU（Neural Processing Unit）是执行 AI 计算的设备；AI Core 是其中实际执行 Kernel 的物理计算核心。
+- **Host**：运行在 CPU 一侧的程序和内存环境，负责准备数据并向 NPU 提交任务。
+- **Block**：同一份 Kernel 的一个逻辑执行任务。运行时为每个 Block 分配编号，并把它调度到可用的 AI Core；Block 不是某个固定的物理 Core。
+- **GM**：所有 AI Core 可访问的设备侧大容量内存，保存完整输入和输出。
+- **UB**：某一个 AI Core 内部的片上存储，只保存该 Core 当前正在处理的一小段数据。
+
+Kernel 从 GM 搬入当前需要的数据，在 UB 中执行向量指令，再把结果写回 GM。
 
 #### 二、为什么从 Add 开始
 

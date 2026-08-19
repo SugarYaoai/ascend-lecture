@@ -1,6 +1,8 @@
 ### 第四节 TensorOJ 实战：用 C++ API 实现 Add
 
-本节继续完成 Add Simple：两个长度为 `172032` 的 `float32` 向量逐元素相加。计算参数仍保持不变：
+第三节已经用 C API 通过了同一个 Add：直接写 GM/UB 指针时，数据位置非常直观。随着 Kernel 变长，地址偏移、局部缓冲区和同步关系也会越来越多；C++ API 的价值是把这些对象显式表达出来，而不是改变 Add 的数学规则或运行方式。
+
+本节仍完成 Add Simple：两个长度为 `172032` 的 `float32` 向量逐元素相加。计算参数保持不变：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -8,7 +10,7 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-这一节从 C API 切换到 C++ API，并继续处理一个固定长度的 Block。
+这是一种表达方式的切换：C API 用指针描述内存，C++ API 用张量对象描述 GM 与 UB 中的一段连续数据。
 
 #### 一、C API 与 C++ API 的对应
 
@@ -22,7 +24,7 @@ constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 | UB 到 GM | `asc_copy_ub2gm` | `AscendC::DataCopy` |
 | 阶段依赖 | `asc_sync()` | `AscendC::PipeBarrier<PIPE_ALL>()` |
 
-C++ API 没有改变 Add 的数据路径，只是把“地址”“片上张量”“搬运”“计算”表达成更明确的对象和函数调用。
+C++ API 没有改变 Add 的数据路径，只是把“地址”“片上张量”“搬运”“计算”表达成更明确的对象和函数调用。`GlobalTensor` 是对 GM 中一段连续元素的视图，不会自行搬运数据；`LocalTensor` 则表示 UB 中一段局部缓冲区。两者之间仍然必须通过 `DataCopy` 搬运。
 
 #### 二、将当前 Block 的 GM 地址绑定为 GlobalTensor
 
@@ -40,7 +42,7 @@ zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + offset, BLOCK_LENGTH);
 
 #### 三、用 LocalMemAllocator 直接申请三块 UB
 
-`LocalMemAllocator<AscendC::Hardware::UB>` 直接从当前 AI Core 的 UB 中申请三块局部张量，分别保存 `x`、`y` 和 `z`：
+`LocalMemAllocator<AscendC::Hardware::UB>` 是 UB 的局部内存分配器。它直接从当前 AI Core 的 UB 中申请三块局部张量，分别保存 `x`、`y` 和 `z`：
 
 ```cpp
 AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
@@ -75,7 +77,7 @@ AscendC::DataCopy(zGm, zLocal, BLOCK_LENGTH);
 AscendC::PipeBarrier<PIPE_ALL>();
 ```
 
-`PipeBarrier<PIPE_ALL>()` 与 C API 的 `asc_sync()` 作用相同：前一阶段完成前，后一阶段不能读取其结果。此处每个阶段都完成后才开始下一个阶段，因此这是单缓冲、串行的执行流程。
+`PipeBarrier<PIPE_ALL>()` 与 C API 的 `asc_sync()` 作用相同：前一阶段完成前，后一阶段不能读取其结果。这里的**单缓冲**，指 `xLocal`、`yLocal`、`zLocal` 各只有一块 UB 空间；每个阶段都完成后才开始下一个阶段，因此这是串行的执行流程。
 
 #### 五、完整 kernel.asc
 
