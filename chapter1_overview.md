@@ -2,7 +2,7 @@
 
 ## 第一章 从 Add 开始理解昇腾算子开发
 
-### 第一节 昇腾算子开发的学习路径
+### 第一节 认识昇腾算子开发
 
 #### 一、一个昇腾算子在做什么
 
@@ -30,11 +30,11 @@ Add 的数学规则足够简单，读者可以把注意力放在程序如何运�
 
 后续各节围绕同一个 Add 算子逐步增加一个新的问题，而不是同时引入所有概念：
 
-1. **固定长度 Add Kernel**：认识 Host、GM、UB、AI Core、Block，并完成一次直接启动的 Add。
-2. **C API 实战**：在 TensorOJ 模板中填写 `kernel.asc`，使用 SIMD C API 完成同一计算。
-3. **C++ API 实战**：使用 `GlobalTensor`、`LocalTensor` 等 C++ API 表达相同的数据搬运与向量计算。
-4. **Tile 分块**：扩大输入长度；当一个 Block 的数据无法一次放入 UB 时，在 Block 内按 Tile 循环处理。
-5. **双缓冲**：让相邻 Tile 的搬运、计算和写回形成重叠，减少执行单元等待。
+1. **编写第一个 Add Kernel**：认识 Host、GM、UB、AI Core、Block，并完成一次直接启动的 Add。
+2. **用 C API 实现 Add**：在 TensorOJ 模板中填写 `kernel.asc`，使用 SIMD C API 完成同一计算。
+3. **用 C++ API 实现 Add**：使用 `GlobalTensor`、`LocalTensor` 等 C++ API 表达相同的数据搬运与向量计算。
+4. **用 Tile 处理更长的向量**：扩大输入长度；当一个 Block 的数据无法一次放入 UB 时，在 Block 内按 Tile 循环处理。
+5. **用双缓冲减少等待**：让相邻 Tile 的搬运、计算和写回形成重叠，减少执行单元等待。
 
 #### 四、两种层级的并行与分块
 
