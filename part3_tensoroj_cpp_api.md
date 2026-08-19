@@ -1,4 +1,4 @@
-### 第三节 TensorOJ C++ API 实战
+### 第四节 TensorOJ C++ API 实战
 
 本节继续完成 Add Simple：两个长度为 `172032` 的 `float32` 向量逐元素相加。计算参数仍保持不变：
 

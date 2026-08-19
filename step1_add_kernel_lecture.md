@@ -1,6 +1,4 @@
-## 第二章 Add 算子：从基础 Kernel 到性能优化
-
-### 第一节 固定长度 Add Kernel
+### 第二节 固定长度 Add Kernel
 
 使用 Ascend C SIMD 的 **C API** 实现 Add 算子。
 

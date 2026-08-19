@@ -1,4 +1,4 @@
-### 第二节 TensorOJ C API 实战
+### 第三节 TensorOJ C API 实战
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。题目提供了工程模板；提交时只需要修改 `kernel.asc`，`main.asc` 负责准备输入、调用 `run_kernel`、等待执行结束并校验输出。
 

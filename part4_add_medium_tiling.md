@@ -1,4 +1,4 @@
-### 第四节 Add Medium：Tile 分块
+### 第五节 Add Medium：Tile 分块
 
 Easy 版本的长度是 `172032`，使用 `16` 个 Block 后，每个 Block 处理 `10752` 个 `float32` 元素。这一段数据对应的三块 UB 缓冲区 `x`、`y`、`z` 共占用 `126 KB`，可以一次搬入 UB 后完成计算。
 

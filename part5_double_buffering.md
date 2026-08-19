@@ -1,6 +1,6 @@
-### 第五节 Add Medium：双缓冲与 TQue 流水线
+### 第六节 Add Medium：双缓冲与 TQue 流水线
 
-第四节中，每个 Block 依次处理 8 个 Tile。一个 Tile 的执行顺序是：
+第五节中，每个 Block 依次处理 8 个 Tile。一个 Tile 的执行顺序是：
 
 ```text
 搬入 Tile i -> 计算 Tile i -> 写回 Tile i -> 搬入 Tile i + 1
@@ -10,7 +10,7 @@
 
 #### 一、单缓冲为什么会出现空档
 
-第四节为一个 Tile 准备了三块 UB：`xLocal`、`yLocal`、`zLocal`。由于只有这一组缓冲区，Tile `i` 还在计算时，Tile `i + 1` 没有地方安全地搬入；否则会覆盖正在被计算读取的 `xLocal`、`yLocal`。
+第五节为一个 Tile 准备了三块 UB：`xLocal`、`yLocal`、`zLocal`。由于只有这一组缓冲区，Tile `i` 还在计算时，Tile `i + 1` 没有地方安全地搬入；否则会覆盖正在被计算读取的 `xLocal`、`yLocal`。
 
 ```text
 时间 ->
@@ -99,7 +99,7 @@ pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
 
 #### 五、UB 容量必须重新计算
 
-第四节的 `TILE_LENGTH = 8192`，一个 `float32` Tile 为：
+第五节的 `TILE_LENGTH = 8192`，一个 `float32` Tile 为：
 
 $$
 8192 \times 4\ \text{B} = 32\ \text{KB}
@@ -139,7 +139,7 @@ CopyOut:            [T0] [T1] [T2] ...
 
 #### 七、代码结构如何变化
 
-第四节的 C API 代码适合说明 Tile 的串行路径。第五节切换到 C++ API，不是为了算子注册，而是为了使用 `TPipe + TQue` 描述 UB 的多缓冲与阶段交接。
+第五节的 C API 代码适合说明 Tile 的串行路径。第六节切换到 C++ API，不是为了算子注册，而是为了使用 `TPipe + TQue` 描述 UB 的多缓冲与阶段交接。
 
 单缓冲的外层逻辑是：
 
@@ -178,12 +178,12 @@ for (uint32_t i = 0; i < TILE_NUM; ++i) {
 | Tile 数很少 | 启动和收尾占比高，收益可能不明显 |
 | UB 预算不足 | 无法使用深度为 2 的队列，需要减小 Tile 或保持单缓冲 |
 
-因此，优化后应通过 profiling 比较第四节与第五节的 Kernel 耗时，而不是只依据代码结构判断快慢。
+因此，优化后应通过 profiling 比较第五节与第六节的 Kernel 耗时，而不是只依据代码结构判断快慢。
 
 #### 九、本节结论
 
 - Tile 解决“一个 Block 的数据能否放入 UB”；双缓冲解决“搬运与计算能否同时推进”。
 - `TQue` 本身是队列抽象；将队列深度设为 `2`，才为相邻 Tile 提供两套可轮换的 UB Buffer。
 - 正确性来自队列与事件表达的数据依赖，不来自盲目并行。
-- 第五节保持直接启动 Kernel 的形式；没有引入算子注册。
+- 第六节保持直接启动 Kernel 的形式；没有引入算子注册。
 - 下一步可以将这套双缓冲结构用于更复杂的算子，观察不同 Tile 长度、不同 Buffer 深度对性能的影响。
