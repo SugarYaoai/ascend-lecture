@@ -2,7 +2,7 @@
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-#### 3.1 题目模板与开发者交付内容
+#### 一、题目模板与开发者交付内容
 
 打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
 
@@ -37,9 +37,9 @@ extern "C" void run_kernel(
 
 后续 3.3 完成 `add_custom` 的 Device 端实现，3.4 再回到 `run_kernel`，利用模板传入的参数完成检查与启动。此时不必急着逐一理解入口的每个参数；它们会在真正需要使用时引入。
 
-#### 3.2 `add_custom` Kernel 算子实现
+#### 二、`add_custom` Kernel 算子实现
 
-##### 3.2.1 物理边界约束与多核切分推导
+##### （一）物理边界约束与多核切分推导
 
 编写 `add_custom` 前，必须先同时确定两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
 
@@ -69,7 +69,7 @@ $$
 
 这不是多个 AI Core 共享 UB 的问题，而是单个 Block 的三段静态 UB 数组已经占到标称容量的约 `98.4%`。标称 `256 KB` 并不等于全部都可供用户数组使用：编译器生成的控制信息、运行时资源及其他片上需求也要占用空间。`252 KB` 会超出这份 Kernel 可用的 UB 资源预算，可能在编译期静态资源检查或运行时分配阶段失败。因此，16 个 Block 是当前固定规格下的安全配置，而不是题目天然规定的唯一值。
 
-##### 3.2.2 C API 接口约定与通用指针转换
+##### （二）C API 接口约定与通用指针转换
 
 确定网格与 UB 资源后，需要把模板传入的通用 GM 地址转换为可进行元素级寻址的 `float32` 指针。SIMD C API 提供这一过程中使用的搬运、计算与同步接口：
 
@@ -86,7 +86,7 @@ __gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + offset;
 __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
 ```
 
-##### 3.2.3 片上数据流驱动的 Kernel 组装
+##### （三）片上数据流驱动的 Kernel 组装
 
 现在将三个阶段组装为完整的 `add_custom`：先定位当前 Block 的 GM 区间，在 UB 中建立局部工作区，再按“GM -> UB -> Vector -> UB -> GM”的数据依赖完成计算。
 
@@ -124,9 +124,9 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 x[32256:43008] + y[32256:43008] -> z[32256:43008]
 ```
 
-#### 3.3 `run_kernel` 调用接口实现
+#### 三、`run_kernel` 调用接口实现
 
-##### 3.3.1 防御性参数校验
+##### （一）防御性参数校验
 
 回到 `run_kernel` 时，模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 则记录输入输出的数量、形状和数据类型，`availableCoreNum` 表示当前可用向量核资源。由于本题 Kernel 只适用于固定长度的 `float32` 向量，先检查这些元信息，可以避免不匹配的规格进入固定执行路径：
 
@@ -142,7 +142,7 @@ if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
 }
 ```
 
-##### 3.3.2 Stream 挂载与 Kernel 启动
+##### （二）Stream 挂载与 Kernel 启动
 
 检查通过后，使用模板提供的 Stream 启动 Kernel：
 
@@ -158,7 +158,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
 
-#### 3.4 完整交付代码解析：kernel.asc
+#### 四、完整交付代码解析：kernel.asc
 
 ```cpp
 #include <cstdint>
