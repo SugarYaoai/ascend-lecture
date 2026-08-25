@@ -11,6 +11,8 @@ C++ API 不会自动完成任何 GM/UB 搬运，也不会替代容量、对齐�
 
 #### 一、GM 地址绑定与 UB 内存分配
 
+##### （一）编译期模板参数与 GM 地址绑定
+
 算子继续复用第三节的静态执行参数：
 
 ```cpp
@@ -19,9 +21,17 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-在 C++ API 中，`blockLength` 被写成 Kernel 模板参数。这样 `Alloc<float, blockLength>()` 能在编译期获知局部张量长度；Host 侧随后用 `add_custom<BLOCK_LENGTH>` 实例化对应的 Kernel。
+`LocalMemAllocator` 的 `Alloc<float, blockLength>()` 需要在编译期获知局部张量长度，才能为 UB 规划固定空间。因此 `blockLength` 不是普通的运行时变量，而是 `add_custom` 的 C++ 模板参数；Host 侧通过 `add_custom<BLOCK_LENGTH>` 实例化长度为 `10752` 的 Kernel：
 
-每个 Block 仍以 `block_idx` 计算数据偏移。区别在于，裸 GM 地址会先绑定为三个 `GlobalTensor<float>`，让后续代码直接围绕当前 Block 的 `x`、`y`、`z` 数据范围组织：
+```cpp
+template <uint32_t blockLength>
+__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+{
+    // blockLength 可作为 Alloc 的编译期长度参数。
+}
+```
+
+题目接口传入的 `GM_ADDR` 是通用 GM 字节地址。当前 Block 的偏移却以 `float32` 元素个数计算，因此要先用 `reinterpret_cast<__gm__ float*>` 将基地址按 `float` 解释，再加上 `offset`。这样 `+ offset` 的步进单位才是 `4 B`，而不是 `1 B`。随后用 `SetGlobalBuffer` 绑定当前 Block 的 GM 地址和长度；这个操作只建立地址映射，不触发数据搬运：
 
 ```cpp
 AscendC::GlobalTensor<float> xGm;
@@ -34,9 +44,9 @@ yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + offset, blockLength);
 zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + offset, blockLength);
 ```
 
-`SetGlobalBuffer` 只绑定地址和长度，不触发数据搬运。`reinterpret_cast<__gm__ float*>` 仍然是必要的：题目接口传入的是通用 GM 地址，转换后 `+ offset` 才按 `float32` 元素而非字节进行寻址。
+##### （二）基于 `LocalMemAllocator` 的 UB 分配
 
-UB 侧不再使用三个 C 风格数组，而是通过 `LocalMemAllocator` 分配三个 `LocalTensor<float>`：
+UB 侧不再使用三个 C 风格数组，而是通过 `LocalMemAllocator` 分配三个 `LocalTensor<float>`。这三块张量分别保存当前 Block 的 `x`、`y` 和 `z` 片段：
 
 ```cpp
 AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
@@ -46,13 +56,13 @@ AscendC::LocalTensor<float> yLocal = ubAllocator.Alloc<float, blockLength>();
 AscendC::LocalTensor<float> zLocal = ubAllocator.Alloc<float, blockLength>();
 ```
 
-它们仍对应三段 `10752` 元素的 UB 空间：
+三块 `LocalTensor` 对应三段 `10752` 元素的 UB 空间：
 
 $$
 3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}
 $$
 
-`LocalMemAllocator` 的直接分配方式清楚地列出了 UB 中有哪些局部资源及其规格，同时没有引入队列或双缓冲。后续引入 TPipe/TQue 时，改变的是这些局部资源的组织与复用方式，而不是 Add 的 GM/UB 基本路径。
+这段代码直接给出了当前 AI Core 的 UB 工作区：三段 `float32` 张量，共 `126 KB`。局部资源的类型、长度和分配位置集中在同一处，后续阅读 `DataCopy` 与 `Add` 时不必再回溯数组地址和大小。
 
 #### 二、带类型的 DataCopy 与流水线屏障控制
 
