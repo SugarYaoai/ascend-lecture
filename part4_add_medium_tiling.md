@@ -2,7 +2,7 @@
 
 #### 一、Add Medium 题目介绍
 
-对应题目：[TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)。
+**本节题目链接：** [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)
 
 Add Medium 仍然是两个一维 `float32` 向量的逐元素加法：
 
