@@ -9,9 +9,9 @@ C++ API 的作用就是降低这两类错误的概率：`GlobalTensor<float>`、
 
 C++ API 不会自动完成任何 GM/UB 搬运，也不会替代容量、对齐和边界检查。它只是给裸地址和 UB 数组加上更清楚的类型与长度信息，并为后续的流水线优化提供更容易维护的代码结构。
 
-#### 一、GM 视图绑定与 UB 结构化分配
+#### 一、从 C API 到 C++ API
 
-##### （一）编译期模板参数与 GM 地址绑定
+##### （一）编译期模板参数与 GM 视图绑定
 
 算子继续复用第三节的静态执行参数：
 
@@ -63,7 +63,7 @@ zGm.SetGlobalBuffer(
   </div>
 </div>
 
-##### （二）基于 `LocalMemAllocator` 的 UB 分配
+##### （二）UB 结构化分配
 
 UB 侧不再使用三个 C 风格数组，而是通过 `LocalMemAllocator` 分配三个 `LocalTensor<float>`。这三块张量分别保存当前 Block 的 `x`、`y` 和 `z` 片段：
 
@@ -92,7 +92,7 @@ $$
 
 这段代码直接给出了当前 AI Core 的 UB 工作区：三段 `float32` 张量，共 `126 KB`。局部资源的类型、长度和分配位置集中在同一处，后续阅读 `DataCopy` 与 `Add` 时不必再回溯数组地址和大小。
 
-#### 二、带类型的 DataCopy 与流水线屏障控制
+##### （三）带类型的 DataCopy 与流水线屏障控制
 
 GM 地址和 UB 工作区建立后，数据按三个依赖阶段执行：搬入 `x`、`y`，在 UB 中计算 `z`，再写回 `z`。
 
@@ -110,7 +110,7 @@ AscendC::PipeBarrier<PIPE_ALL>();
 
 由于 `DataCopy` 的源和目的都是 `float` Tensor，`blockLength` 表示元素个数；C++ API 已从 Tensor 类型中得知单元素大小，因此不需要像 C API 那样手动写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内部的流水线屏障：它保证输入片段写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。此处每种局部张量只有一块，三个阶段按依赖顺序执行。
 
-#### 三、C API 与 C++ API 的区别
+#### 二、C API 与 C++ API 的区别
 
 完成同一份 `add_custom` 后，可以更具体地比较两种 API 的差异。核心并不是函数名替换，而是内存资源、数据范围与依赖关系在代码中的表达方式：
 
@@ -124,7 +124,7 @@ AscendC::PipeBarrier<PIPE_ALL>();
 
 两种 API 的硬件数据路径完全一致：`GM -> UB -> Vector -> UB -> GM`。`GlobalTensor` 与 `LocalTensor` 只描述数据位于哪里、长度是多少，不会自行复制数据；GM 与 UB 之间的物理搬运仍由 `DataCopy` 发起，阶段间依赖仍由 `PipeBarrier` 保证。
 
-#### 四、完整交付代码解析：kernel.asc
+#### 三、完整交付代码解析：kernel.asc
 
 `run_kernel` 的题目接口与第三节相同：它校验本题固定的输入规格后，使用 `add_custom<BLOCK_LENGTH><<<NUM_BLOCKS, nullptr, stream>>>(x, y, z)` 实例化模板 Kernel，并将 16 Block 的任务挂载到模板传入的 Stream。下面是完整的 `kernel.asc`：
 
