@@ -1,4 +1,4 @@
-### 第三节 TensorOJ 实战：基于 C API 的 Add 算子交付
+### 第三节 基于 C API 实现 Add 算子
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
