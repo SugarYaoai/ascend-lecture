@@ -40,7 +40,11 @@ $$
 
 这三层存储的容量、访问速度和可见范围都不同。算子代码不能把它们当成同一种内存来使用：完整数据通常保存在 GM，真正参与当前计算的数据则需要进入 Local Memory。后面的 Kernel 代码会显式控制这种移动，而不是由语言运行时自动完成。
 
-一次 Kernel 启动可以配置多个 Block。运行时将这些 Block 调度到可用的 AI Core 上；多个 Block 可以并行执行，但不需要假设某个 Block 永远绑定某个固定 Core。
+#### 三、一次 Add 的数据划分与流动
+
+一次 Add 计算需要先回答两个问题：完整向量由哪些任务分别处理？每个任务处理的数据怎样经过不同存储层并完成计算？
+
+一次 Kernel 启动可以配置多个 Block。Block 是同一份 Kernel 的逻辑执行任务；运行时将它们调度到可用的 AI Core 上。多个 Block 可以并行执行，但不需要假设某个 Block 永远绑定某个固定 Core。
 
 本例将长度为 `172032` 的向量均匀分成 `16` 段，每个 Block 处理 `10752` 个元素：
 
@@ -51,11 +55,9 @@ Block 1 : 元素 [10752, 21504)
 Block 15: 元素 [161280, 172032)
 ```
 
-#### 三、一个 Block 内部的 Add 计算
+以其中任意一个 Block 为例，它负责的 Add 数据会沿着这条路径流动：`Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。
 
-认识三个存储层后，再看一次 Add 的完整数据路径：`Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。
-
-Host 先将输入从 Host Memory 复制到 Global Memory。随后 Device 端的 Kernel 只在 Global Memory 与 AI Core 的 UB 之间移动数据：一个 Block 从 GM 读取 `x` 和 `y`，将它们搬入 UB，在 UB 中完成 `x + y`，再把结果写回 GM 中的 `z`。
+Host 先将完整输入从 Host Memory 复制到 Global Memory。随后 Kernel 只处理当前 Block 对应的那一段：从 GM 读取这段 `x` 和 `y`，搬入 AI Core 的 UB；向量计算单元在 UB 中完成 `x + y`；结果暂存在 UB 后写回 GM，最终再由 Host 取回。
 
 ```text
 x, y (Global Memory)
@@ -70,29 +72,9 @@ z_local (UB)
 z (Global Memory)
 ```
 
-这条路径对应的 Device 端核心代码只有三步：
-
-```cpp
-asc_copy_gm2ub(x_local, x_gm, block_length * sizeof(float));
-asc_copy_gm2ub(y_local, y_gm, block_length * sizeof(float));
-asc_sync();
-
-asc_add(z_local, x_local, y_local, block_length);
-asc_sync();
-
-asc_copy_ub2gm(z_gm, z_local, block_length * sizeof(float));
-asc_sync();
-```
-
-`asc_copy_gm2ub` 是“从 Global Memory 读入 UB”；`asc_copy_ub2gm` 是“把 UB 中的结果写回 Global Memory”。
-
-`asc_add` 对应 AI Core 上的向量计算操作。它不是由程序员逐元素编写 `for` 循环完成加法，而是向量计算单元执行 SIMD 加法：一条向量指令会并行处理一批 `float32` 元素。这样，`x_local` 和 `y_local` 中连续的大量元素可以被批量相加，计算吞吐量远高于按单个元素逐次执行标量加法。
-
-`asc_sync()` 保证前一阶段的操作完成后，再进入下一阶段。
-
 #### 四、Device 端 Kernel
 
-后缀名为 `*.asc` 的文件可以同时包含 Device 端和 Host 端代码。先看 Device 端的完整 Kernel：
+前一部分描述了数据划分与流动的宏观过程。后缀名为 `*.asc` 的文件可以同时包含 Device 端和 Host 端代码；下面将这条宏观路径写成实际的 Device 端 Kernel。
 
 ```cpp
 #include <cstdint>
