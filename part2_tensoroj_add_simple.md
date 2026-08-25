@@ -37,7 +37,7 @@ extern "C" void run_kernel(
 
 后续 3.3 完成 `add_custom` 的 Device 端实现，3.4 再回到 `run_kernel`，利用模板传入的参数完成检查与启动。此时不必急着逐一理解入口的每个参数；它们会在真正需要使用时引入。
 
-#### 3.2 静态网格划分与 UB 逻辑容量映射
+#### 3.2 `add_custom` Kernel 算子实现
 
 这是一道固定规格的 easy version，因此无需在提交时重新搜索最优参数。直接复用前两节已经验证过的执行计划：总长度 `172032`，启动 `16` 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，并在 UB 中完成一次“搬入 -> 相加 -> 搬出”。
 
@@ -57,9 +57,9 @@ $$
 
 问题不在于多个 Core 共享同一块 UB，而在于每个 Block 所在 AI Core 的独立 UB 几乎被占满，无法为运行时和其他资源留下空间。这里的 `16` 是满足当前固定规格的可行配置，而不是题目天然规定的唯一值。
 
-#### 3.3 通用地址强转与片上 Vector 加法 Kernel 实现
+要将这套静态执行计划写入模板，还需要在 `add_custom` 中完成两件事：引入指针风格 SIMD C API，并把模板传入的通用 GM 地址转换为 `float32` 指针。
 
-上一节中直接操作 `__gm__`、`__ubuf__` 指针和 `asc_*` 函数的写法，就是指针风格 SIMD C API。模板默认包含 `kernel_operator.h`，这里还需包含 C API 头文件：
+模板默认包含 `kernel_operator.h`，这里还需包含 SIMD C API 头文件：
 
 ```cpp
 #include "c_api/asc_simd.h"
@@ -107,7 +107,7 @@ x[32256:43008] + y[32256:43008] -> z[32256:43008]
 
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度参数以字节为单位；`asc_add` 的长度参数以元素个数为单位。
 
-#### 3.4 防御性参数校验与 Stream 挂载提交
+#### 3.3 `run_kernel` 调用接口实现
 
 回到 `run_kernel` 时，模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 则记录输入输出的数量、形状和数据类型，`availableCoreNum` 表示当前可用向量核资源。由于本题 Kernel 只适用于固定长度的 `float32` 向量，先检查这些元信息，可以避免不匹配的规格进入固定执行路径：
 
@@ -137,7 +137,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
 
-#### 3.5 完整交付代码解析：kernel.asc
+#### 3.4 完整交付代码解析：kernel.asc
 
 ```cpp
 #include <cstdint>
