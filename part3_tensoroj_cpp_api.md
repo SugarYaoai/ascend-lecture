@@ -9,21 +9,7 @@
 
 因此，C++ Tensor API 并不是替开发者自动完成 GM/UB 搬运，也不能替代容量、对齐和边界检查；它的作用是让这些硬件约束在代码结构中拥有明确的类型、范围和资源归属。本节将在不改变物理执行计划的前提下，将同一份 Add 重写为带类型的 GM/UB 张量视图与结构化局部内存分配。
 
-#### 一、C API 与 C++ Tensor API 的范式差异
-
-从 C API 迁移到 C++ Tensor API，核心并不是把 `asc_add` 换成 `AscendC::Add`，而是改变了内存资源与数据范围在代码中的表达方式：
-
-| 维度 | C API | C++ Tensor API | 对开发者的意义 |
-| --- | --- | --- | --- |
-| GM 数据范围 | `__gm__ float*` 裸指针与手写偏移 | `GlobalTensor<float>` | 将当前 Block 的元素类型、起始地址和长度组织为一个 GM 视图。 |
-| UB 局部空间 | `__ubuf__ float local[...]` | `LocalMemAllocator<UB>` + `LocalTensor<float>` | 将 UB 中的局部对象、元素类型和长度显式表达为结构化资源。 |
-| 数据搬运 | 传入地址与字节数 | 在两个带类型 Tensor 间 `DataCopy` | 元素类型由 Tensor 携带，长度参数按元素个数表达。 |
-| 向量计算 | `asc_add` | `AscendC::Add` | 对 UB 中带类型的局部张量进行向量运算。 |
-| 核内依赖 | `asc_sync()` | `AscendC::PipeBarrier<PIPE_ALL>()` | 显式约束搬运流水线与向量流水线之间的数据依赖。 |
-
-两种 API 的硬件数据路径完全一致：`GM -> UB -> Vector -> UB -> GM`。`GlobalTensor` 与 `LocalTensor` 都是内存视图，不会自行复制数据；GM 与 UB 之间的物理搬运仍由 `DataCopy` 发起，阶段间依赖仍由 `PipeBarrier` 保证。
-
-#### 二、物理视图绑定与片上内存的结构化分配
+#### 一、物理视图绑定与片上内存的结构化分配
 
 算子继续复用第三节的静态执行参数：
 
@@ -68,7 +54,7 @@ $$
 
 `LocalMemAllocator` 的直接分配方式清楚地列出了 UB 中有哪些局部资源及其规格，同时没有引入队列或双缓冲。后续引入 TPipe/TQue 时，改变的是这些局部资源的组织与复用方式，而不是 Add 的 GM/UB 基本路径。
 
-#### 三、带类型的 DataCopy 与流水线屏障控制
+#### 二、带类型的 DataCopy 与流水线屏障控制
 
 GM 视图与 UB 工作区建立后，数据按三个依赖阶段执行：搬入 `x`、`y`，在 UB 中计算 `z`，再写回 `z`。
 
@@ -85,6 +71,20 @@ AscendC::PipeBarrier<PIPE_ALL>();
 ```
 
 由于 `DataCopy` 的源和目的都是 `float` Tensor，`blockLength` 表示元素个数；C++ API 已从 Tensor 类型中得知单元素大小，因此不需要像 C API 那样手动写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内部的流水线屏障：它保证输入片段写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。此处每种局部张量只有一块，三个阶段按依赖顺序执行。
+
+#### 三、C API 与 C++ Tensor API 的范式差异
+
+完成同一份 `add_custom` 后，可以更具体地比较两种 API 的差异。核心并不是函数名替换，而是内存资源、数据范围与依赖关系在代码中的表达方式：
+
+| 维度 | C API | C++ Tensor API | 对开发者的意义 |
+| --- | --- | --- | --- |
+| GM 数据范围 | `__gm__ float*` 裸指针与手写偏移 | `GlobalTensor<float>` | 将当前 Block 的元素类型、起始地址和长度组织为一个 GM 视图。 |
+| UB 局部空间 | `__ubuf__ float local[...]` | `LocalMemAllocator<UB>` + `LocalTensor<float>` | 将 UB 中的局部对象、元素类型和长度显式表达为结构化资源。 |
+| 数据搬运 | 传入地址与字节数 | 在两个带类型 Tensor 间 `DataCopy` | 元素类型由 Tensor 携带，长度参数按元素个数表达。 |
+| 向量计算 | `asc_add` | `AscendC::Add` | 对 UB 中带类型的局部张量进行向量运算。 |
+| 核内依赖 | `asc_sync()` | `AscendC::PipeBarrier<PIPE_ALL>()` | 显式约束搬运流水线与向量流水线之间的数据依赖。 |
+
+两种 API 的硬件数据路径完全一致：`GM -> UB -> Vector -> UB -> GM`。`GlobalTensor` 与 `LocalTensor` 都是内存视图，不会自行复制数据；GM 与 UB 之间的物理搬运仍由 `DataCopy` 发起，阶段间依赖仍由 `PipeBarrier` 保证。
 
 #### 四、完整交付代码解析：kernel.asc
 
