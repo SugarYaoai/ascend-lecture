@@ -2,8 +2,6 @@
 
 第三节的 C API 实现直接操作 GM 指针、UB 数组和字节长度。这种写法贴近硬件，但当算子包含更多输入、临时张量和复杂的数据流时，手写地址偏移与局部资源会迅速增加。C++ Tensor API 在不改变物理执行计划的前提下，将同一份 Add 重写为带类型的 GM/UB 张量视图与结构化局部内存分配。
 
-本节仍使用 TensorOJ 的 [Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)：总长度 `172032`，16 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，三段 UB 工作区合计占用 `126 KB`。
-
 #### 一、C API 与 C++ Tensor API 的范式差异
 
 从 C API 迁移到 C++ Tensor API，核心并不是把 `asc_add` 换成 `AscendC::Add`，而是改变了内存资源与数据范围在代码中的表达方式：
