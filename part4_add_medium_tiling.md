@@ -18,27 +18,42 @@ $$
 
 本节固定启动 `16` 个 Block，因此每个 Block 负责 `65536` 个元素。若仍像 Add Simple 那样将该 Block 的输入和输出一次放入 UB，三段缓冲区将需要 `768 KB`，超过当前 AI Core 可用的片上工作空间。Add Medium 的关键不在于改写加法公式，而在于让同一段 Block 数据分批进入 UB：每次只处理一个 **Tile**，循环完成整段数据。
 
-#### 二、为什么需要 Tile 分块
+#### 二、片上内存瓶颈与 Tile 的必要性
 
-先保持 `16` 个 Block。此时每个 Block 负责：
+##### （一）多核切分仍然无法消除 UB 容量限制
+
+Block 切分解决的是“多个 AI Core 如何同时分工”：完整向量被划为多个互不重叠的区间，运行时把这些逻辑 Block 调度到可用的 AI Core 上。它能够缩短总任务的执行时间，却不能让单个 AI Core 的 UB 变大。
+
+这是 NPU 算子开发中最基本的物理矛盾：GM 容量大，可以保存完整张量，但距离计算单元较远；UB 位于 AI Core 内部，访问很快，却只有几百 KB 量级的片上 SRAM。对于更长的张量，即使已经把任务分给多个 Core，单个 Block 分到的数据仍可能装不进 UB。
+
+本题先以 `16` 个 Block 均分长度为 `1048576` 的向量：
 
 $$
 \text{BLOCK\_LENGTH} = 1048576 / 16 = 65536
 $$
 
-若把 `65536` 个元素的 `x`、`y`、`z` 全部放入 UB，所需空间为：
+一个 Block 必须同时保留自己的输入 `x`、输入 `y` 和输出 `z`。若将这 `65536` 个 `float32` 元素一次性全部放入 UB，需要：
 
 $$
 3 \times 65536 \times 4\text{ B} = 768\text{ KB}
 $$
 
-这远大于一个 AI Core 可供这段程序使用的 UB 空间。GM 可以容纳完整向量，UB 则只保存当前正在计算的一小段数据；因此，不能把整个 Block 一次搬进 UB。
+> **物理约束：** 单个 AI Core 的 UB 名义容量约为 `256 KB`，而这里的三段工作区需要 `768 KB`，达到其三倍。这样的静态 UB 分配不是“性能较差”，而是无法满足片上 SRAM 的容量约束，可能在编译期资源分配或运行时直接失败。
 
 ![16 个 Block 下，一个 Block 为什么仍需要切 Tile](assets/tiling/why-tile-16-blocks.png)
 
-*16 个 Block 将完整向量均分为 16 段；每段的三块完整缓冲区合计为 768 KB，必须继续拆成 Tile 才能进入 UB。*
+*Block 已经完成跨 Core 的任务划分；但每个 Block 自己的 `768 KB` 工作集仍超出 UB，因而还需要第二级切分。*
 
-这里取：
+##### （二）Block 与 Tile 构成两级切分
+
+Tile 不是重新划分 AI Core 之间的任务，而是把一个 Block 内过长的数据段拆成多份，在同一个 AI Core 中按循环逐份处理：先将一个 Tile 从 GM 搬入 UB，在 UB 中完成加法并写回 GM，再复用同一组 UB 空间处理下一个 Tile。
+
+因此，本例有两层不同的分工：
+
+- **Block 切分**：空间上的任务划分。`16` 个 Block 分别负责完整向量的不同区间，使多个 AI Core 可以并行工作。
+- **Tile 切分**：单个 Block 内的时序分批。一个 Block 用循环处理多个 Tile，以有限的 UB 容量吞吐自己的完整数据段。
+
+这里选择如下参数：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -47,13 +62,13 @@ constexpr uint32_t TILE_LENGTH = 8192;
 constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;  // 8
 ```
 
-每个 Tile 的三块 `float32` 缓冲区占用：
+每个 Tile 的 `x`、`y`、`z` 三块 `float32` 缓冲区占用：
 
 $$
 3 \times 8192 \times 4\text{ B} = 98304\text{ B} = 96\text{ KB}
 $$
 
-所以，一个 Block 中的 `65536` 个元素被拆成 `8` 个 Tile；每次只让一个 Tile 占用 UB。
+于是，一个 Block 用 `8` 次循环完成 `65536` 个元素；任意时刻只有一个 `96 KB` 的 Tile 工作集驻留在 UB 中。这既避开了 `768 KB` 的片上容量越界，也为后续将数据搬运与计算重叠保留了空间。
 
 #### 三、一个 Block 怎样处理多个 Tile
 
