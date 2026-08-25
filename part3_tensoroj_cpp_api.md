@@ -110,19 +110,21 @@ AscendC::PipeBarrier<PIPE_ALL>();
 
 由于 `DataCopy` 的源和目的都是 `float` Tensor，`blockLength` 表示元素个数；C++ API 已从 Tensor 类型中得知单元素大小，因此不需要像 C API 那样手动写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内部的流水线屏障：它保证输入片段写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。此处每种局部张量只有一块，三个阶段按依赖顺序执行。
 
-#### 二、C API 与 C++ API 的区别
+#### 二、C API 与 C++ API 的架构范式对比
 
-完成同一份 `add_custom` 后，可以更具体地比较两种 API 的差异。核心并不是函数名替换，而是内存资源、数据范围与依赖关系在代码中的表达方式：
-
-| 维度 | C API | C++ API | 对开发者的意义 |
+| 架构维度 | C API | C++ API | 工程价值 |
 | --- | --- | --- | --- |
-| GM 数据范围 | `__gm__ float*` 裸指针与手写偏移 | `GlobalTensor<float>` | 将当前 Block 的元素类型、起始地址和长度放在同一个对象中。 |
-| UB 局部空间 | `__ubuf__ float local[...]` | `LocalMemAllocator<UB>` + `LocalTensor<float>` | 用对象记录 UB 中局部数据的类型和长度。 |
-| 数据搬运 | 传入地址与字节数 | 在两个带类型 Tensor 间 `DataCopy` | 元素类型由 Tensor 携带，长度参数按元素个数表达。 |
-| 向量计算 | `asc_add` | `AscendC::Add` | 对 UB 中带类型的局部张量进行向量运算。 |
-| 核内依赖 | `asc_sync()` | `AscendC::PipeBarrier<PIPE_ALL>()` | 显式约束搬运流水线与向量流水线之间的数据依赖。 |
+| **GM 地址、类型与范围** | `__gm__ float*` 配合手写指针偏移 | `GlobalTensor<float>` 绑定地址、元素类型和当前 Block 长度 | 将原本分散在指针、偏移量和长度常量中的约束集中起来，减少类型不匹配和偏移范围写错的机会。 |
+| **搬运长度与步进单位** | 搬运写字节数：`BLOCK_LENGTH * sizeof(float)`；计算写元素数 | `DataCopy`、`Add` 统一传入 `blockLength` 个元素 | Tensor 类型提供元素宽度，开发者无需在每次搬运时手动换算 `sizeof(float)`，避免字节数与元素数混用。 |
+| **UB 资源与流水线演进** | `__ubuf__` 静态数组直接占用 UB | `LocalMemAllocator` + `LocalTensor` 描述 UB 局部资源 | 当前能集中管理 UB 对象的类型和长度；当数据流扩展为多 Tile、多 Buffer 时，可进一步过渡到 `TPipe`、`TQue` 的缓冲区复用与队列调度。 |
 
-两种 API 的硬件数据路径完全一致：`GM -> UB -> Vector -> UB -> GM`。`GlobalTensor` 与 `LocalTensor` 只描述数据位于哪里、长度是多少，不会自行复制数据；GM 与 UB 之间的物理搬运仍由 `DataCopy` 发起，阶段间依赖仍由 `PipeBarrier` 保证。
+底层执行模型并未改变：
+
+$$
+\text{GM} \rightarrow \text{UB} \rightarrow \text{Vector} \rightarrow \text{UB} \rightarrow \text{GM}
+$$
+
+`GlobalTensor` 和 `LocalTensor` 用于绑定这条路径上的数据范围，`DataCopy` 负责实际搬运，`PipeBarrier` 负责当前 AI Core 内搬运与计算阶段的依赖同步。C++ API 提升的是代码对硬件资源、单位和生命周期的表达能力，而不是替代这些硬件步骤。
 
 #### 三、完整交付代码解析：kernel.asc
 
