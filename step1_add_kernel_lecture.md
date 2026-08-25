@@ -40,6 +40,8 @@ $$
 
 这三层存储的容量、访问速度和可见范围都不同。算子代码不能把它们当成同一种内存来使用：完整数据通常保存在 GM，真正参与当前计算的数据则需要进入 Local Memory。后面的 Kernel 代码会显式控制这种移动，而不是由语言运行时自动完成。
 
+本例中，每个 Block 要在 UB 中同时暂存 `x`、`y` 和 `z` 的一段数据。每段长度为 `10752` 个 `float32` 元素，因此单段占用 `10752 × 4 B = 43008 B`，三段合计为 `129024 B`，即 `126 KB`。这低于单个 AI Core 约 `256 KB` 的 UB 容量，并为运行时所需空间保留了余量。
+
 #### 三、一次 Add 的数据划分与流动
 
 一次 Add 计算需要先回答两个问题：完整向量由哪些任务分别处理？每个任务处理的数据怎样经过不同存储层并完成计算？
@@ -54,6 +56,10 @@ Block 1 : 元素 [10752, 21504)
 ...
 Block 15: 元素 [161280, 172032)
 ```
+
+每个 Block 搬运的一段数据为 `43008 B = 1344 × 32 B`，恰好是 `32 B` 的整数倍。向量计算与数据搬运以固定数据块为粒度工作，连续访问和对齐的数据布局能避免额外的尾部处理；本例的长度选择同时满足了这一要求。
+
+这里完成的是 **Block 级的数据切分**：不同 Block 分别负责完整输入的不同区间。第五节将出现的 Tile 则是单个 Block 内部、为了适应 UB 容量而继续进行的切分；两者解决的是不同层级的问题。
 
 以其中任意一个 Block 为例，它负责的 Add 数据会沿着这条路径流动：`Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。
 
@@ -75,6 +81,8 @@ z (Global Memory)
 #### 四、Device 端 Kernel
 
 前一部分描述了数据划分与流动的宏观过程。后缀名为 `*.asc` 的文件可以同时包含 Device 端和 Host 端代码；下面将这条宏观路径写成实际的 Device 端 Kernel。
+
+本节使用的是 **Ascend C SIMD C API**。它在 `c_api/asc_simd.h` 中提供 `asc_copy_gm2ub`、`asc_add` 等接口，并允许用 `__ubuf__` 声明 UB 局部缓冲区。后续章节会介绍另一种 C++ Tensor API 风格；两种接口的 UB 管理方式不同，不能混用。
 
 ```cpp
 #include <cstdint>
@@ -236,6 +244,8 @@ int32_t main(int argc, char const* argv[])
 
 Host 端依次创建 Stream，分配内存，拷贝输入，启动 Kernel，同步并取回输出。代码片段只展示 Add 调用相关部分；运行时初始化、设备选择等步骤可置于此处之前。
 
+在独立的工程程序中，调用这些运行时接口前还应完成 `aclInit(nullptr)` 和 `aclrtSetDevice(deviceId)`；资源释放后应调用 `aclrtResetDevice(deviceId)` 与 `aclFinalize()`。同时，应检查每个 ACL 接口的返回值。本节保留最小调用片段，以便将注意力集中在 Add 的数据准备、启动与结果回传上；这些运行时生命周期要求在实际工程中不可省略。
+
 创建 Stream 后，分别为三个 Device 数组和一个 Host 输出数组申请内存：
 
 ```cpp
@@ -273,43 +283,7 @@ aclrtMemcpy(zHost, totalByteSize, zDevice, totalByteSize,
             ACL_MEMCPY_DEVICE_TO_HOST);
 ```
 
-#### 六、UB 容量补充
-
-Atlas A2 训练系列产品（Ascend 910B）中，单个 AI Core 的 UB 容量可按约 `256 KB` 理解。一个 Block 需要在 UB 中同时保存 `x_local`、`y_local`、`z_local` 三个数组：
-
-| UB 数组 | 元素数 | 单元素大小 | 占用 |
-| --- | ---: | ---: | ---: |
-| `x_local` | 10752 | 4 B | 43008 B = 42 KB |
-| `y_local` | 10752 | 4 B | 43008 B = 42 KB |
-| `z_local` | 10752 | 4 B | 43008 B = 42 KB |
-| 合计 | 32256 | - | 129024 B = 126 KB |
-
-UB 总容量为 `256 KB`，但不能将静态缓冲区配置到接近该上限：运行时还需要保留空间。这里三段 UB 缓冲区总计 `126 KB`，可为系统预留区及运行时资源保留充足余量。每个 Block 将自己负责的 10752 个 `float32` 输入元素及其结果同时放入 UB 中完成计算。
-
-#### 七、数据流向补充
-
-计算路径为：
-
-```text
-Host Memory
-    |  aclrtMemcpy
-    v
-Device Global Memory
-    |  asc_copy_gm2ub
-    v
-UB: x_local, y_local
-    |  asc_add
-    v
-UB: z_local
-    |  asc_copy_ub2gm
-    v
-Device Global Memory
-    |  aclrtMemcpy
-    v
-Host Memory: zHost
-```
-
-#### 八、算子编译与运行
+#### 六、算子编译与运行
 
 将 `add_172032.asc` 放入工程目录后，可使用 CMake 编译：
 
@@ -339,7 +313,6 @@ make -j
 
 `--npu-arch` 必须与实际使用的 NPU 架构匹配。`dav-2201` 对应 Atlas A2 / Ascend 910B 系列。
 
-#### 九、参考资料
+#### 七、参考资料
 
 - [基于 SIMD 编程的 Add 算子快速入门](https://asc.gitcode.com/guide/%E5%85%A5%E9%97%A8%E6%95%99%E7%A8%8B/%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8/%E5%9F%BA%E4%BA%8ESIMD%E7%BC%96%E7%A8%8B/Add%E7%AE%97%E5%AD%90%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8.html)
-- `Add(1).zip` 中的题目说明：`Add/Add.md`
