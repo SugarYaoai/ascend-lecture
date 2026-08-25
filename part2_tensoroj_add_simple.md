@@ -1,8 +1,8 @@
-### 第三节 TensorOJ 实战：用 C API 实现 Add
+### 第三节 TensorOJ 实战：基于 C API 的 Add 算子交付
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-#### 一、先明确实战的边界与交付物
+#### 3.1 评测框架与内核交付边界
 
 做这道题前，先把责任边界划清。评测框架负责 Host 侧的通用流程；`kernel.asc` 负责将传入的设备内存地址与运行时 Stream 连接到自己的 Add Kernel。两者通过 `run_kernel` 这一入口衔接：
 
@@ -41,7 +41,7 @@ info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 
 `availableCoreNum` 是运行时查询得到的可用向量核数。它说明当前设备是否具备执行向量 Kernel 的资源；本题固定启动 16 个逻辑 Block，实际由运行时调度到可用的 AI Core 上。
 
-#### 二、把前两节的执行计划带入题目
+#### 3.2 静态网格划分与 UB 逻辑容量映射
 
 这是一道固定规格的 easy version，因此无需在提交时重新搜索最优参数。直接复用前两节已经验证过的执行计划：总长度 `172032`，启动 `16` 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，并在 UB 中完成一次“搬入 -> 相加 -> 搬出”。
 
@@ -61,7 +61,7 @@ $$
 
 问题不在于多个 Core 共享同一块 UB，而在于每个 Block 所在 AI Core 的独立 UB 几乎被占满，无法为运行时和其他资源留下空间。这里的 `16` 是满足当前固定规格的可行配置，而不是题目天然规定的唯一值。
 
-#### 三、把模板地址适配为 C API 的指针
+#### 3.3 通用地址强转与片上 Vector 加法 Kernel 实现
 
 上一节中直接操作 `__gm__`、`__ubuf__` 指针和 `asc_*` 函数的写法，就是指针风格 SIMD C API。模板默认包含 `kernel_operator.h`，这里还需包含 C API 头文件：
 
@@ -72,8 +72,6 @@ $$
 该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
 
 与上一节唯一新增的地址适配是：题目入口给出的是通用的 `GM_ADDR`，而 C API 的搬运接口需要带元素类型的 `__gm__ float*`。`reinterpret_cast` 不会搬运或修改数据，它只告诉编译器“把这段 GM 地址按 `float` 元素来解释”；随后 `+ offset` 才能按 `float` 的元素个数计算地址偏移。
-
-#### 四、实现题目要求的 Device Kernel
 
 Kernel 的参数仍使用 `GM_ADDR`，因为这是题目模板传入的地址类型。`GM_ADDR` 在该模板中底层是字节指针，因此先转换成 `__gm__ float*`，再按 `block_idx` 计算当前 Block 的起始位置。
 
@@ -113,7 +111,7 @@ x[32256:43008] + y[32256:43008] -> z[32256:43008]
 
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度参数以字节为单位；`asc_add` 的长度参数以元素个数为单位。
 
-#### 五、在入口中提交执行计划
+#### 3.4 防御性参数校验与 Stream 挂载提交
 
 `run_kernel` 的最后一步是将前面定义的 Kernel 加入模板提供的 Stream。由于本题 Kernel 为固定长度、固定 `float32` 的实现，先检查输入输出的数量、类型和长度，可以避免不匹配的张量规格进入这条固定执行路径：
 
@@ -143,7 +141,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
 
-#### 六、完整 kernel.asc：从模板入口到 Device 计算
+#### 3.5 完整交付代码解析：kernel.asc
 
 ```cpp
 #include <cstdint>
