@@ -4,20 +4,20 @@
 
 #### 3.1 评测框架与内核交付边界
 
-打开题目工程时，提交者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；提交者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
+打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
 
 <pre class="dataflow"><code><span class="flow-judge">评测框架</span>：准备 x、y、z 的设备内存
         <span class="flow-arrow">|</span>
         <span class="flow-arrow">v</span>
-<span class="flow-entry">run_kernel(...)</span>      &lt;- 提交者在这里配置并启动 Kernel
+<span class="flow-entry">run_kernel(...)</span>      &lt;- 开发者在这里配置并启动 Kernel
         <span class="flow-arrow">|</span>
         <span class="flow-arrow">v</span>
-<span class="flow-kernel">add_custom(...)</span>      &lt;- 提交者定义 Device 端的 Add 计算
+<span class="flow-kernel">add_custom(...)</span>      &lt;- 开发者定义 Device 端的 Add 计算
         <span class="flow-arrow">|</span>
         <span class="flow-arrow">v</span>
 <span class="flow-result">评测框架</span>：等待、取回并校验 z</code></pre>
 
-模板规定了 `run_kernel` 的函数签名，提交者不能修改它。写代码时，只需沿着下面两处 `TODO` 完成自己的交付：
+模板规定了 `run_kernel` 的函数签名，开发者不能修改它。写代码时，只需沿着下面两处 `TODO` 完成自己的交付：
 
 ```cpp
 #include <cmath>
