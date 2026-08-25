@@ -1,18 +1,8 @@
 ### 第三节 TensorOJ 实战：用 C API 实现 Add
 
-上一节完整展示了 Host 如何准备数据、启动 Kernel 并取回结果。在线评测题会把这部分固定流程封装进题目框架：评测系统准备输入、调用提交代码、检查输出；开发者只需要补齐被留空的 `kernel.asc`。这并不意味着 Host 端不再存在，而是它的通用工作已经由框架完成，实战的重点转为：**在既定接口中，把上一节的 Add 执行计划正确提交给设备。**
+本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。题目提供工程模板；提交时只修改 `kernel.asc`，评测框架负责准备隐藏测试数据、调用 `run_kernel`、等待执行结束并校验输出。读者要交付的不是完整应用程序，而是一段符合这个接口约定的 Device 端实现与启动逻辑。
-
-本题是一个固定规格的 easy version：
-
-| 数据对象 | 规格 |
-| --- | --- |
-| 输入 `x`、`y` | 一维 `float32`，形状 `(172032,)` |
-| 输出 `z` | 一维 `float32`，形状 `(172032,)` |
-| 运算 | `z[i] = x[i] + y[i]` |
-| 输入取值范围 | `[-1.0, 1.0]` |
-| 可修改文件 | `kernel.asc` |
+这道 Add Simple 题提供了一个固定规格的 easy version 工程。评测框架负责准备输入、调用提交代码、等待执行结束并校验输出；本题只需要修改 `kernel.asc`，在既定接口中实现 Device 端 Kernel 并启动它。
 
 #### 一、先明确实战的边界与交付物
 
