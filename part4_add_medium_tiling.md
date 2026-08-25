@@ -1,18 +1,22 @@
-### 第五节 用 Tile 处理更长的向量
+### 第五节 TensorOJ 实战：用 Tile 处理 Add Medium
 
-前四节的 Add 能一次将一个 Block 的全部数据搬入 UB。这个前提一旦不成立，前面的“搬入、计算、搬出”三步仍然正确，却不能再只执行一次。
+#### 一、Add Medium 题目介绍
 
-Easy 版本的长度是 `172032`，使用 `16` 个 Block 后，每个 Block 处理 `10752` 个 `float32` 元素。这一段数据对应的三块 UB 缓冲区 `x`、`y`、`z` 共占用 `126 KB`，可以一次搬入 UB 后完成计算。
+Add Medium 仍然是两个一维 `float32` 向量的逐元素加法：
 
-Add Medium 将向量长度扩大到：
+$$
+z_i = x_i + y_i, \quad i \in [0, 1048576)
+$$
+
+与 Add Simple 相同，开发者实现 `kernel.asc` 中的 Device 端 Kernel 和启动语句；输入 `x`、`y` 与输出 `z` 的形状均为 `(1048576,)`。计算规则没有变，变化的是单次任务的数据规模：
 
 $$
 N = 1048576
 $$
 
-本节仍然处理 `float32` 的逐元素加法，但每个 Block 接到的数据已经无法一次放进 UB。**Tile** 是一个 Block 内部的一小段连续元素，长度专门选到可以安全放入 UB。解决办法是：一个 Block 负责一段连续的数据，再把这段数据拆成若干个 Tile，逐个搬运和计算。
+本节固定启动 `16` 个 Block，因此每个 Block 负责 `65536` 个元素。若仍像 Add Simple 那样将该 Block 的输入和输出一次放入 UB，三段缓冲区将需要 `768 KB`，超过当前 AI Core 可用的片上工作空间。Add Medium 的关键不在于改写加法公式，而在于让同一段 Block 数据分批进入 UB：每次只处理一个 **Tile**，循环完成整段数据。
 
-#### 一、为什么需要 Tile 分块
+#### 二、为什么需要 Tile 分块
 
 先保持 `16` 个 Block。此时每个 Block 负责：
 
@@ -49,7 +53,7 @@ $$
 
 所以，一个 Block 中的 `65536` 个元素被拆成 `8` 个 Tile；每次只让一个 Tile 占用 UB。
 
-#### 二、一个 Block 怎样处理多个 Tile
+#### 三、一个 Block 怎样处理多个 Tile
 
 `block_idx` 决定当前 Block 在完整向量中的起点，`tileIdx` 决定当前处理该 Block 内的哪一小段：
 
@@ -87,7 +91,7 @@ asc_sync();
 
 同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
 
-#### 三、Tile 分块后，为什么还要关注 Block 数量
+#### 四、Tile 分块后，为什么还要关注 Block 数量
 
 Tile 解决的是“一个 Block 的数据如何装进 UB”的问题；Block 数量决定的是“这次 Kernel 提交了多少独立任务，运行时有多少任务可以调度到 AI Core 上”。两者分别控制片上存储与任务级并行度。
 
@@ -104,7 +108,7 @@ Tile 解决的是“一个 Block 的数据如何装进 UB”的问题；Block �
 
 本题故意保留 `16` 个 Block：这样每个 Block 的 `65536` 个元素明显超出 UB 一次可容纳的范围，Tile 循环成为代码中不可省略的一部分。
 
-#### 四、完整 kernel.asc
+#### 五、完整 kernel.asc
 
 下面的实现固定处理长度为 `1048576` 的 `float32` 向量。每个 Block 处理 `65536` 个元素，并在 Block 内循环完成 `8` 次 Tile 计算。
 
@@ -166,7 +170,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 }
 ```
 
-#### 五、本节要点
+#### 六、本节要点
 
 - Tile 把一个 Block 的长数据段拆成可放入 UB 的短数据段。
 - `blockOffset` 选择当前 Block 的工作范围，`tileOffset` 选择该范围内当前处理的 Tile。
