@@ -39,9 +39,9 @@ extern "C" void run_kernel(
 
 #### 3.2 `add_custom` Kernel 算子实现
 
-##### 1. 确定静态执行参数
+##### 3.2.1 物理边界约束与多核切分推导
 
-这是一道固定规格的 easy version，因此无需在提交时重新搜索最优参数。直接复用前两节已经验证过的执行计划：总长度 `172032`，启动 `16` 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，并在 UB 中完成一次“搬入 -> 相加 -> 搬出”。
+编写 `add_custom` 前，必须先同时确定两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -49,35 +49,46 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-##### 2. 校验单个 Block 的 UB 容量
+这组参数不是任意常量，而是同时满足三项硬件约束：
 
-这样选择不是为了凑出一个常量，而是同时满足三项条件：16 个 Block 工作量均衡；每段长度为 `10752 × 4 B = 43008 B`，是 `32 B` 的整数倍；三个局部缓冲区合计占用 `126 KB`，能放入单个 AI Core 约 `256 KB` 的 UB 并留出余量。
+- **多核负载均衡**：`172032` 个元素被 16 个逻辑 Block 均分，每个 Block 处理 `10752` 个元素。
+- **32B 数据粒度**：单段 `float32` 数据长度为 `10752 × 4 B = 43008 B = 1344 × 32 B`，满足连续数据按 `32 B` 整数倍组织的要求。
+- **UB 资源预算**：`xLocal`、`yLocal`、`zLocal` 三段缓冲区共占用：
 
-这也解释了为什么不能随意减少 Block 数。例如仍处理 `172032` 个元素却只启动 `8` 个 Block 时，每个 Block 需要处理 `21504` 个元素，三段 UB 缓冲区将占用：
+$$
+3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}
+$$
+
+这为单个 AI Core 标称约 `256 KB` 的 UB 留出了资源余量。
+
+**为什么不能缩减为 8 个 Block？** 若仍处理 `172032` 个元素却只启动 8 个 Block，每个 Block 需要处理 `21504` 个元素，三段 UB 缓冲区将占用：
 
 $$
 3 \times 21504 \times 4\text{ B} = 258048\text{ B} = 252\text{ KB}
 $$
 
-问题不在于多个 Core 共享同一块 UB，而在于每个 Block 所在 AI Core 的独立 UB 几乎被占满，无法为运行时和其他资源留下空间。这里的 `16` 是满足当前固定规格的可行配置，而不是题目天然规定的唯一值。
+这不是多个 AI Core 共享 UB 的问题，而是单个 Block 的三段静态 UB 数组已经占到标称容量的约 `98.4%`。标称 `256 KB` 并不等于全部都可供用户数组使用：编译器生成的控制信息、运行时资源及其他片上需求也要占用空间。`252 KB` 会超出这份 Kernel 可用的 UB 资源预算，可能在编译期静态资源检查或运行时分配阶段失败。因此，16 个 Block 是当前固定规格下的安全配置，而不是题目天然规定的唯一值。
 
-##### 3. 引入 C API 并适配 GM 地址
+##### 3.2.2 C API 接口约定与通用指针转换
 
-要将这套静态执行计划写入模板，还需要在 `add_custom` 中完成两件事：引入指针风格 SIMD C API，并把模板传入的通用 GM 地址转换为 `float32` 指针。
-
-模板默认包含 `kernel_operator.h`，这里还需包含 SIMD C API 头文件：
+确定网格与 UB 资源后，需要把模板传入的通用 GM 地址转换为可进行元素级寻址的 `float32` 指针。SIMD C API 提供这一过程中使用的搬运、计算与同步接口：
 
 ```cpp
 #include "c_api/asc_simd.h"
 ```
 
-该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
+题目入口的 `GM_ADDR` 是通用字节地址。若直接对它做地址运算，偏移单位是字节；而本题需要按 `float32` 元素定位当前 Block 的起点。因此先用 `reinterpret_cast` 将地址解释为 `__gm__ float*`，再加上元素数 `offset`。这个转换不搬运、不修改数据，只改变编译器理解地址和计算偏移的方式：
 
-与上一节唯一新增的地址适配是：题目入口给出的是通用的 `GM_ADDR`，而 C API 的搬运接口需要带元素类型的 `__gm__ float*`。`reinterpret_cast` 不会搬运或修改数据，它只告诉编译器“把这段 GM 地址按 `float` 元素来解释”；随后 `+ offset` 才能按 `float` 的元素个数计算地址偏移。
+```cpp
+const uint32_t offset = block_idx * BLOCK_LENGTH;
+__gm__ float* xGm = reinterpret_cast<__gm__ float*>(x) + offset;
+__gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + offset;
+__gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
+```
 
-##### 4. 组合为 `add_custom` Kernel
+##### 3.2.3 片上数据流驱动的 Kernel 组装
 
-Kernel 的参数仍使用 `GM_ADDR`，因为这是题目模板传入的地址类型。`GM_ADDR` 在该模板中底层是字节指针，因此先转换成 `__gm__ float*`，再按 `block_idx` 计算当前 Block 的起始位置。
+现在将三个阶段组装为完整的 `add_custom`：先定位当前 Block 的 GM 区间，在 UB 中建立局部工作区，再按“GM -> UB -> Vector -> UB -> GM”的数据依赖完成计算。
 
 ```cpp
 __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
@@ -105,7 +116,7 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 }
 ```
 
-这段 Kernel 没有引入新的计算策略，而是逐项落实第二部分的计划：`block_idx` 确定当前片段，三个 `__ubuf__` 数组构成局部工作区，三阶段 API 组织该片段的搬入、向量加法与写回。
+这段 Kernel 中，`block_idx` 确定当前片段，三个 `__ubuf__` 数组构成局部工作区，三阶段 API 组织该片段的搬入、向量加法与写回。两个搬运接口的长度单位为字节，因此传入 `BLOCK_LENGTH * sizeof(float)`；`asc_add` 的长度单位为元素个数，因此直接传入 `BLOCK_LENGTH`。
 
 以 `block_idx = 3` 为例，当前 Block 的偏移是 `3 × 10752 = 32256`，因此它计算：
 
@@ -113,9 +124,9 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 x[32256:43008] + y[32256:43008] -> z[32256:43008]
 ```
 
-`asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度参数以字节为单位；`asc_add` 的长度参数以元素个数为单位。
-
 #### 3.3 `run_kernel` 调用接口实现
+
+##### 3.3.1 防御性参数校验
 
 回到 `run_kernel` 时，模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 则记录输入输出的数量、形状和数据类型，`availableCoreNum` 表示当前可用向量核资源。由于本题 Kernel 只适用于固定长度的 `float32` 向量，先检查这些元信息，可以避免不匹配的规格进入固定执行路径：
 
@@ -130,6 +141,8 @@ if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
     return;
 }
 ```
+
+##### 3.3.2 Stream 挂载与 Kernel 启动
 
 检查通过后，使用模板提供的 Stream 启动 Kernel：
 
