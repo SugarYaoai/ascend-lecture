@@ -105,22 +105,22 @@ Tile 7: [57344, 65536)
 
 同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
 
-#### 四、Tile 分块后，为什么还要关注 Block 数量
+#### 四、Tile 循环中的流水线空档
 
-Tile 解决的是“一个 Block 的数据如何装进 UB”的问题；Block 数量决定的是“这次 Kernel 提交了多少独立任务，运行时有多少任务可以调度到 AI Core 上”。两者分别控制片上存储与任务级并行度。
+Tile 分块首先解决的是容量问题：每轮只让一个 `96 KB` 工作集进入 UB，因此一个 Block 可以完成原本需要 `768 KB` 的数据段。但“能装下”不等于“已经跑满硬件”。
 
-对于长度为 `1048576` 的 Add，改变 Block 数会改变每个 Block 的工作量：
+当前循环为了保证数据依赖，按下面的顺序处理每个 Tile：
 
-| Block 数 | 每个 Block 元素数 | 三块完整缓冲区的大小 |
-| ---: | ---: | ---: |
-| 16 | 65536 | 768 KB |
-| 32 | 32768 | 384 KB |
-| 64 | 16384 | 192 KB |
-| 128 | 8192 | 96 KB |
+```text
+搬入 Tile 0 -> 计算 Tile 0 -> 写回 Tile 0
+                         -> 搬入 Tile 1 -> 计算 Tile 1 -> 写回 Tile 1
+```
 
-更多 Block 会让单个 Block 变小，也可能让更多 AI Core 同时获得工作；但并不是固定选择最大的数字。实际设备同时可运行的 AI Core 数有限，超过后其余 Block 会等待调度；过小的 Block 还会增加任务调度与启动开销。`availableCoreNum` 是运行时报告的可用向量核数量，可用来约束或参考 Block 数，但不是“必须启动同样多 Block”的命令。最终需要用 profiling 比较不同 `NUM_BLOCKS` 的实际耗时。
+每个阶段后的 `asc_sync()` 都在等待前一阶段完成：输入尚未搬完时，Vector 单元不能读取 UB；加法尚未结束时，结果也不能写回 GM。这些同步保证了正确性，但在单缓冲写法中，MTE 搬运单元和 Vector 计算单元会在不少时间段内相互等待。
 
-本题故意保留 `16` 个 Block：这样每个 Block 的 `65536` 个元素明显超出 UB 一次可容纳的范围，Tile 循环成为代码中不可省略的一部分。
+AI Core 中，负责 GM 与 UB 数据搬运的 MTE 单元和负责向量加法的 Vector 单元是不同的硬件单元。更高效的安排应当让它们处理不同 Tile：例如 Vector 正在计算 Tile 0 时，MTE 同时搬入 Tile 1。这样，Tile 0 的计算时间可以覆盖 Tile 1 的部分搬运等待。
+
+这正是下一节引入双缓冲的原因：为相邻 Tile 准备两组可轮换的 UB 工作区，并重新组织同步关系，使“搬入、计算、写回”能够在不同 Tile 上重叠推进。当前的单缓冲 Tile 循环是这个优化的正确性基线。
 
 #### 五、完整 kernel.asc
 
@@ -183,10 +183,3 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
-
-#### 六、本节要点
-
-- Tile 把一个 Block 的长数据段拆成可放入 UB 的短数据段。
-- `blockOffset` 选择当前 Block 的工作范围，`tileOffset` 选择该范围内当前处理的 Tile。
-- Tile 循环反复执行 GM 到 UB、UB 内 Add、UB 到 GM，并复用同一组 UB 数组。
-- Block 数量与 Tile 长度是两个独立参数：前者影响任务级并行度，后者决定单次 UB 占用。
