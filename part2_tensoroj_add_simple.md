@@ -4,42 +4,38 @@
 
 #### 3.1 评测框架与内核交付边界
 
-做这道题前，先把责任边界划清。评测框架负责 Host 侧的通用流程；`kernel.asc` 负责将传入的设备内存地址与运行时 Stream 连接到自己的 Add Kernel。两者通过 `run_kernel` 这一入口衔接：
+打开题目工程时，提交者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；提交者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
 
-```text
-评测框架准备 x、y、z 的设备内存
-        |
-        v
-调用 run_kernel(...)           <- 提交代码实现这个入口
-        |
-        v
-启动 add_custom(...)           <- 提交代码定义这个 Device Kernel
-        |
-        v
-评测框架等待、取回并校验 z
-```
+<pre class="dataflow"><code><span class="flow-judge">评测框架</span>：准备 x、y、z 的设备内存
+        <span class="flow-arrow">|</span>
+        <span class="flow-arrow">v</span>
+<span class="flow-entry">run_kernel(...)</span>      &lt;- 提交者在这里配置并启动 Kernel
+        <span class="flow-arrow">|</span>
+        <span class="flow-arrow">v</span>
+<span class="flow-kernel">add_custom(...)</span>      &lt;- 提交者定义 Device 端的 Add 计算
+        <span class="flow-arrow">|</span>
+        <span class="flow-arrow">v</span>
+<span class="flow-result">评测框架</span>：等待、取回并校验 z</code></pre>
 
-模板已经定义并调用 `run_kernel`。这就是题目与提交代码之间的**接口约定**：函数签名不能修改，函数体的职责是检查当前输入是否符合本题规格，并启动自己的 Device 端 Kernel。
+模板规定了 `run_kernel` 的函数签名，提交者不能修改它。写代码时，只需沿着下面两处 `TODO` 完成自己的交付：
 
 ```cpp
+#include <cmath>
+#include "kernel_operator.h"
+
+// TODO 1：定义 add_custom，完成 Device 端的向量加法。
+
 extern "C" void run_kernel(
     GM_ADDR x, const TensorGroupInfo& info_x,
     GM_ADDR y, const TensorGroupInfo& info_y,
     GM_ADDR z, const TensorGroupInfo& info_z,
     int64_t availableCoreNum, aclrtStream stream)
 {
-    // 在这里启动 Device 端 Kernel
+    // TODO 2：使用 <<<...>>> 启动 add_custom。
 }
 ```
 
-`x`、`y`、`z` 的类型是 `GM_ADDR`，即运行时传入的 Device 侧 Global Memory 地址。`info_x`、`info_y`、`info_z` 是张量元信息，描述张量的形状与数据类型；例如：
-
-```cpp
-info_x.tensors[0].shape[0]  // 输入 x 的第 0 维长度
-info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
-```
-
-`availableCoreNum` 是运行时查询得到的可用向量核数。它说明当前设备是否具备执行向量 Kernel 的资源；本题固定启动 16 个逻辑 Block，实际由运行时调度到可用的 AI Core 上。
+后续 3.3 完成 `add_custom` 的 Device 端实现，3.4 再回到 `run_kernel`，利用模板传入的参数完成检查与启动。此时不必急着逐一理解入口的每个参数；它们会在真正需要使用时引入。
 
 #### 3.2 静态网格划分与 UB 逻辑容量映射
 
@@ -113,7 +109,7 @@ x[32256:43008] + y[32256:43008] -> z[32256:43008]
 
 #### 3.4 防御性参数校验与 Stream 挂载提交
 
-`run_kernel` 的最后一步是将前面定义的 Kernel 加入模板提供的 Stream。由于本题 Kernel 为固定长度、固定 `float32` 的实现，先检查输入输出的数量、类型和长度，可以避免不匹配的张量规格进入这条固定执行路径：
+回到 `run_kernel` 时，模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 则记录输入输出的数量、形状和数据类型，`availableCoreNum` 表示当前可用向量核资源。由于本题 Kernel 只适用于固定长度的 `float32` 向量，先检查这些元信息，可以避免不匹配的规格进入固定执行路径：
 
 ```cpp
 if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
