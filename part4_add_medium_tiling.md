@@ -49,7 +49,9 @@ Tile 不是重新划分 AI Core 之间的任务，而是把一个 Block 内过�
 - **Block 切分**：空间上的任务划分。`16` 个 Block 分别负责完整向量的不同区间，使多个 AI Core 可以并行工作。
 - **Tile 切分**：单个 Block 内的时序分批。一个 Block 用循环处理多个 Tile，以有限的 UB 容量吞吐自己的完整数据段。
 
-这里选择如下参数：
+`TILE_LENGTH` 表示一个 Tile 包含的元素数，也是一次从 GM 搬入 UB、完成加法并写回 GM 的处理粒度。本例取 `8192`：一个 `float32` Tile 的单段数据为 `8192 × 4 B = 32 KB`，既满足 `32 B` 对齐，也让 `x`、`y`、`z` 三段工作区保持在较宽裕的 UB 预算内。
+
+因此，执行参数为：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -58,7 +60,7 @@ constexpr uint32_t TILE_LENGTH = 8192;
 constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;  // 8
 ```
 
-每个 Tile 的 `x`、`y`、`z` 三块 `float32` 缓冲区占用：
+由 `TILE_LENGTH = 8192` 可得，每个 Tile 的 `x`、`y`、`z` 三块 `float32` 缓冲区占用：
 
 $$
 3 \times 8192 \times 4\text{ B} = 98304\text{ B} = 96\text{ KB}
