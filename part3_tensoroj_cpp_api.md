@@ -15,46 +15,74 @@ C++ API 不会自动完成任何 GM/UB 搬运，也不会替代容量、对齐�
 
 算子继续复用第三节的静态执行参数：
 
-```cpp
-constexpr uint32_t NUM_BLOCKS = 16;
-constexpr uint32_t BLOCK_LENGTH = 10752;
-constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
-```
-
 `LocalMemAllocator` 的 `Alloc<float, blockLength>()` 需要在编译期获知局部张量长度，才能为 UB 规划固定空间。因此 `blockLength` 不是普通的运行时变量，而是 `add_custom` 的 C++ 模板参数；Host 侧通过 `add_custom<BLOCK_LENGTH>` 实例化长度为 `10752` 的 Kernel：
 
-```cpp
-template <uint32_t blockLength>
-__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+<div class="api-compare">
+  <div class="api-compare-side c-api">
+    <span class="api-compare-label">第三节：C API</span>
+    <pre><code class="language-cpp">constexpr uint32_t NUM_BLOCKS = 16;
+constexpr uint32_t BLOCK_LENGTH = 10752;
+constexpr int64_t TOTAL_LENGTH =
+    NUM_BLOCKS * BLOCK_LENGTH;</code></pre>
+  </div>
+  <div class="api-compare-side cpp-api">
+    <span class="api-compare-label">本节：C++ API</span>
+    <pre><code class="language-cpp">template &lt;uint32_t blockLength&gt;
+__vector__ __global__ void add_custom(
+    GM_ADDR x, GM_ADDR y, GM_ADDR z)
 {
-    // blockLength 可作为 Alloc 的编译期长度参数。
-}
-```
+    // blockLength 用于 UB 分配。
+}</code></pre>
+  </div>
+</div>
 
 题目接口传入的 `GM_ADDR` 是通用 GM 字节地址。当前 Block 的偏移却以 `float32` 元素个数计算，因此要先用 `reinterpret_cast<__gm__ float*>` 将基地址按 `float` 解释，再加上 `offset`。这样 `+ offset` 的步进单位才是 `4 B`，而不是 `1 B`。随后用 `SetGlobalBuffer` 绑定当前 Block 的 GM 地址和长度；这个操作只建立地址映射，不触发数据搬运：
 
-```cpp
-AscendC::GlobalTensor<float> xGm;
-AscendC::GlobalTensor<float> yGm;
-AscendC::GlobalTensor<float> zGm;
-
+<div class="api-compare">
+  <div class="api-compare-side c-api">
+    <span class="api-compare-label">第三节：C API</span>
+    <pre><code class="language-cpp">const uint32_t offset =
+    block_idx * BLOCK_LENGTH;
+__gm__ float* xGm =
+    reinterpret_cast&lt;__gm__ float*&gt;(x) + offset;
+__gm__ float* yGm =
+    reinterpret_cast&lt;__gm__ float*&gt;(y) + offset;
+__gm__ float* zGm =
+    reinterpret_cast&lt;__gm__ float*&gt;(z) + offset;</code></pre>
+  </div>
+  <div class="api-compare-side cpp-api">
+    <span class="api-compare-label">本节：C++ API</span>
+    <pre><code class="language-cpp">AscendC::GlobalTensor&lt;float&gt; xGm, yGm, zGm;
 const uint32_t offset = block_idx * blockLength;
-xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + offset, blockLength);
-yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + offset, blockLength);
-zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + offset, blockLength);
-```
+xGm.SetGlobalBuffer(
+    reinterpret_cast&lt;__gm__ float*&gt;(x) + offset, blockLength);
+yGm.SetGlobalBuffer(
+    reinterpret_cast&lt;__gm__ float*&gt;(y) + offset, blockLength);
+zGm.SetGlobalBuffer(
+    reinterpret_cast&lt;__gm__ float*&gt;(z) + offset, blockLength);</code></pre>
+  </div>
+</div>
 
 ##### （二）基于 `LocalMemAllocator` 的 UB 分配
 
 UB 侧不再使用三个 C 风格数组，而是通过 `LocalMemAllocator` 分配三个 `LocalTensor<float>`。这三块张量分别保存当前 Block 的 `x`、`y` 和 `z` 片段：
 
-```cpp
-AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
-
-AscendC::LocalTensor<float> xLocal = ubAllocator.Alloc<float, blockLength>();
-AscendC::LocalTensor<float> yLocal = ubAllocator.Alloc<float, blockLength>();
-AscendC::LocalTensor<float> zLocal = ubAllocator.Alloc<float, blockLength>();
-```
+<div class="api-compare">
+  <div class="api-compare-side c-api">
+    <span class="api-compare-label">第三节：C API</span>
+    <pre><code class="language-cpp">__ubuf__ float xLocal[BLOCK_LENGTH];
+__ubuf__ float yLocal[BLOCK_LENGTH];
+__ubuf__ float zLocal[BLOCK_LENGTH];</code></pre>
+  </div>
+  <div class="api-compare-side cpp-api">
+    <span class="api-compare-label">本节：C++ API</span>
+    <pre><code class="language-cpp">AscendC::LocalMemAllocator&lt;AscendC::Hardware::UB&gt;
+    ubAllocator;
+auto xLocal = ubAllocator.Alloc&lt;float, blockLength&gt;();
+auto yLocal = ubAllocator.Alloc&lt;float, blockLength&gt;();
+auto zLocal = ubAllocator.Alloc&lt;float, blockLength&gt;();</code></pre>
+  </div>
+</div>
 
 三块 `LocalTensor` 对应三段 `10752` 元素的 UB 空间：
 

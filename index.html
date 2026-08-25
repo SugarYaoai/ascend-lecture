@@ -228,6 +228,42 @@
     .flow-kernel { color: #cba8ff; font-weight: 700; }
     .flow-result { color: #85deab; font-weight: 700; }
 
+    .api-compare {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin: 20px 0 26px;
+    }
+    .api-compare-side {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid;
+      border-radius: 6px;
+    }
+    .api-compare-side.c-api {
+      background: #fff7ed;
+      border-color: #f2c996;
+    }
+    .api-compare-side.cpp-api {
+      background: #eef8f8;
+      border-color: #9fd8d2;
+    }
+    .api-compare-label {
+      display: block;
+      margin: 0 0 9px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .c-api .api-compare-label { color: #9a4d13; }
+    .cpp-api .api-compare-label { color: #08736f; }
+    .api-compare-side pre {
+      margin: 0;
+      padding: 14px 16px;
+      box-shadow: inset 3px 0 0 #007acc;
+    }
+    .api-compare-side.c-api pre { box-shadow: inset 3px 0 0 #d97720; }
+    .api-compare-side.cpp-api pre { box-shadow: inset 3px 0 0 #00988f; }
+
     table {
       width: 100%;
       margin: 19px 0 24px;
@@ -282,6 +318,7 @@
       h3 { font-size: 18px; }
       h4 { font-size: 20px; }
       h5 { font-size: 17px; }
+      .api-compare { grid-template-columns: 1fr; }
       pre { margin-left: -4px; margin-right: -4px; padding: 16px; }
     }
   </style>
