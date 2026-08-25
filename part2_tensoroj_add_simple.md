@@ -2,7 +2,7 @@
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-#### 3.1 评测框架与内核交付边界
+#### 3.1 题目模板与开发者交付内容
 
 打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
 
