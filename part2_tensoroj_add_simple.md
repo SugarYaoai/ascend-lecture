@@ -2,8 +2,6 @@
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-这道 Add Simple 题提供了一个固定规格的 easy version 工程。评测框架负责准备输入、调用提交代码、等待执行结束并校验输出；本题只需要修改 `kernel.asc`，在既定接口中实现 Device 端 Kernel 并启动它。
-
 #### 一、先明确实战的边界与交付物
 
 做这道题前，先把责任边界划清。评测框架负责 Host 侧的通用流程；`kernel.asc` 负责将传入的设备内存地址与运行时 Stream 连接到自己的 Add Kernel。两者通过 `run_kernel` 这一入口衔接：
