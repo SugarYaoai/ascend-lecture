@@ -39,6 +39,8 @@ extern "C" void run_kernel(
 
 #### 3.2 `add_custom` Kernel 算子实现
 
+##### 1. 确定静态执行参数
+
 这是一道固定规格的 easy version，因此无需在提交时重新搜索最优参数。直接复用前两节已经验证过的执行计划：总长度 `172032`，启动 `16` 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，并在 UB 中完成一次“搬入 -> 相加 -> 搬出”。
 
 ```cpp
@@ -46,6 +48,8 @@ constexpr uint32_t NUM_BLOCKS = 16;
 constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
+
+##### 2. 校验单个 Block 的 UB 容量
 
 这样选择不是为了凑出一个常量，而是同时满足三项条件：16 个 Block 工作量均衡；每段长度为 `10752 × 4 B = 43008 B`，是 `32 B` 的整数倍；三个局部缓冲区合计占用 `126 KB`，能放入单个 AI Core 约 `256 KB` 的 UB 并留出余量。
 
@@ -56,6 +60,8 @@ $$
 $$
 
 问题不在于多个 Core 共享同一块 UB，而在于每个 Block 所在 AI Core 的独立 UB 几乎被占满，无法为运行时和其他资源留下空间。这里的 `16` 是满足当前固定规格的可行配置，而不是题目天然规定的唯一值。
+
+##### 3. 引入 C API 并适配 GM 地址
 
 要将这套静态执行计划写入模板，还需要在 `add_custom` 中完成两件事：引入指针风格 SIMD C API，并把模板传入的通用 GM 地址转换为 `float32` 指针。
 
@@ -68,6 +74,8 @@ $$
 该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
 
 与上一节唯一新增的地址适配是：题目入口给出的是通用的 `GM_ADDR`，而 C API 的搬运接口需要带元素类型的 `__gm__ float*`。`reinterpret_cast` 不会搬运或修改数据，它只告诉编译器“把这段 GM 地址按 `float` 元素来解释”；随后 `+ offset` 才能按 `float` 的元素个数计算地址偏移。
+
+##### 4. 组合为 `add_custom` Kernel
 
 Kernel 的参数仍使用 `GM_ADDR`，因为这是题目模板传入的地址类型。`GM_ADDR` 在该模板中底层是字节指针，因此先转换成 `__gm__ float*`，再按 `block_idx` 计算当前 Block 的起始位置。
 
