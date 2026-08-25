@@ -1,12 +1,12 @@
 ### 第三节 TensorOJ 实战：用 C API 实现 Add
 
-上一节手写了 Host 与 Device 两侧的完整调用过程，目的是看清一次 Kernel 启动需要哪些环节。实际练习时，常见的形式是由题目框架承担 Host 端的固定工作，开发者专注实现 Device 端。
+上一节完整展示了 Host 如何准备数据、启动 Kernel 并取回结果。在线评测题会把这部分固定流程封装进题目框架：评测系统准备输入、调用提交代码、检查输出；开发者只需要补齐被留空的 `kernel.asc`。这并不意味着 Host 端不再存在，而是它的通用工作已经由框架完成，实战的重点转为：**在既定接口中，把上一节的 Add 执行计划正确提交给设备。**
 
-本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 是在线评测环境：它用隐藏测试数据调用提交的代码，并根据输出判断正确性。题目提供工程模板；提交时只需要修改 `kernel.asc`，`main.asc` 负责准备输入、调用 `run_kernel`、等待执行结束并校验输出。
+本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。题目提供工程模板；提交时只修改 `kernel.asc`，评测框架负责准备隐藏测试数据、调用 `run_kernel`、等待执行结束并校验输出。读者要交付的不是完整应用程序，而是一段符合这个接口约定的 Device 端实现与启动逻辑。
 
 本题是一个固定规格的 easy version：
 
-| 配置项 | 取值 |
+| 数据对象 | 规格 |
 | --- | --- |
 | 输入 `x`、`y` | 一维 `float32`，形状 `(172032,)` |
 | 输出 `z` | 一维 `float32`，形状 `(172032,)` |
@@ -14,9 +14,24 @@
 | 输入取值范围 | `[-1.0, 1.0]` |
 | 可修改文件 | `kernel.asc` |
 
-#### 一、题目模板提供的入口
+#### 一、先明确实战的边界与交付物
 
-模板已经定义并调用 `run_kernel`。这就是题目与提交代码之间的**接口约定**：函数签名不能随意修改，函数体负责根据输入元信息启动自己的 Device 端 Kernel。
+做这道题前，先把责任边界划清。评测框架负责 Host 侧的通用流程；`kernel.asc` 负责将传入的设备内存地址与运行时 Stream 连接到自己的 Add Kernel。两者通过 `run_kernel` 这一入口衔接：
+
+```text
+评测框架准备 x、y、z 的设备内存
+        |
+        v
+调用 run_kernel(...)           <- 提交代码实现这个入口
+        |
+        v
+启动 add_custom(...)           <- 提交代码定义这个 Device Kernel
+        |
+        v
+评测框架等待、取回并校验 z
+```
+
+模板已经定义并调用 `run_kernel`。这就是题目与提交代码之间的**接口约定**：函数签名不能修改，函数体的职责是检查当前输入是否符合本题规格，并启动自己的 Device 端 Kernel。
 
 ```cpp
 extern "C" void run_kernel(
@@ -29,32 +44,18 @@ extern "C" void run_kernel(
 }
 ```
 
-`x`、`y`、`z` 的类型是 `GM_ADDR`，即运行时传入的 Device 侧 Global Memory 地址。`info_x`、`info_y`、`info_z` 是张量元信息（metadata），描述张量的形状与数据类型；例如：
+`x`、`y`、`z` 的类型是 `GM_ADDR`，即运行时传入的 Device 侧 Global Memory 地址。`info_x`、`info_y`、`info_z` 是张量元信息，描述张量的形状与数据类型；例如：
 
 ```cpp
 info_x.tensors[0].shape[0]  // 输入 x 的第 0 维长度
 info_x.tensors[0].dtype     // 输入 x 的数据类型，0 表示 float32
 ```
 
-`availableCoreNum` 是运行时查询得到的可用向量核数。这个题的实现启动 16 个 Block，要求设备至少有一个可用向量核；Block 由运行时调度到 AI Core 执行。
+`availableCoreNum` 是运行时查询得到的可用向量核数。它说明当前设备是否具备执行向量 Kernel 的资源；本题固定启动 16 个逻辑 Block，实际由运行时调度到可用的 AI Core 上。
 
-#### 二、引入 SIMD C API
+#### 二、把前两节的执行计划带入题目
 
-上一节中直接操作 `__gm__`、`__ubuf__` 指针和 `asc_*` 函数的写法，就是指针风格 SIMD C API。模板默认包含 `kernel_operator.h`，它主要提供 Ascend C 的 C++ API；这里要继续使用 C API，因此还需要加入：
-
-```cpp
-#include "c_api/asc_simd.h"
-```
-
-该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
-
-#### 三、配置 Block
-
-输入总长度为 `172032`。这里沿用上一节的 16 个 Block：目标是先适应题目模板，而不是重新搜索最佳并行度。启动 16 个 Block 时，每个 Block 处理：
-
-$$
-\text{BLOCK\_LENGTH} = 172032 / 16 = 10752
-$$
+这是一道固定规格的 easy version，因此无需在提交时重新搜索最优参数。直接复用前两节已经验证过的执行计划：总长度 `172032`，启动 `16` 个 Block，每个 Block 处理 `10752` 个 `float32` 元素，并在 UB 中完成一次“搬入 -> 相加 -> 搬出”。
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -62,23 +63,29 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-每个 Block 用三段 UB 分别保存输入 `x`、输入 `y` 和输出 `z`：
+这样选择不是为了凑出一个常量，而是同时满足三项条件：16 个 Block 工作量均衡；每段长度为 `10752 × 4 B = 43008 B`，是 `32 B` 的整数倍；三个局部缓冲区合计占用 `126 KB`，能放入单个 AI Core 约 `256 KB` 的 UB 并留出余量。
+
+这也解释了为什么不能随意减少 Block 数。例如仍处理 `172032` 个元素却只启动 `8` 个 Block 时，每个 Block 需要处理 `21504` 个元素，三段 UB 缓冲区将占用：
 
 $$
-10752 \times 4\text{ B} \times 3 = 129024\text{ B} = 126\text{ KB}
+3 \times 21504 \times 4\text{ B} = 258048\text{ B} = 252\text{ KB}
 $$
 
-这三个缓冲区位于当前 AI Core 的 UB 中。UB 总容量虽然为 `256 KB`，但还需要为系统预留区、运行时资源等留下空间，因此这里使用 `126 KB`，而不是将静态数组配置到接近 `256 KB`。
+问题不在于多个 Core 共享同一块 UB，而在于每个 Block 所在 AI Core 的独立 UB 几乎被占满，无法为运行时和其他资源留下空间。这里的 `16` 是满足当前固定规格的可行配置，而不是题目天然规定的唯一值。
 
-例如，若总长度仍为 `172032`，却只启动 `8` 个 Block，那么每个 Block 要处理 `21504` 个元素：
+#### 三、把模板地址适配为 C API 的指针
 
-$$
-3 \times 21504 \times 4\ \text{B} = 258048\ \text{B} = 252\ \text{KB}
-$$
+上一节中直接操作 `__gm__`、`__ubuf__` 指针和 `asc_*` 函数的写法，就是指针风格 SIMD C API。模板默认包含 `kernel_operator.h`，这里还需包含 C API 头文件：
 
-此时每个 Block 都会在自己所在的 AI Core 上申请约 `252 KB` 的 UB，几乎占满 `256 KB`。即使 8 个 Block 被调度到 8 个不同的 AI Core，问题也不是 8 个 Core 共享同一块 UB；而是每个 Core 的单独 UB 申请都没有给运行时留下足够空间，Kernel 可能在执行时失败。将 Block 数改为 `16` 后，每个 Block 的三段缓冲区回到 `126 KB`，才保留了可用余量。
+```cpp
+#include "c_api/asc_simd.h"
+```
 
-#### 四、实现 Device 端 Kernel
+该头文件声明 `asc_init`、`asc_copy_gm2ub`、`asc_add` 和 `asc_copy_ub2gm`。没有这一行时，编译器无法识别这些 `asc_*` 函数。
+
+与上一节唯一新增的地址适配是：题目入口给出的是通用的 `GM_ADDR`，而 C API 的搬运接口需要带元素类型的 `__gm__ float*`。`reinterpret_cast` 不会搬运或修改数据，它只告诉编译器“把这段 GM 地址按 `float` 元素来解释”；随后 `+ offset` 才能按 `float` 的元素个数计算地址偏移。
+
+#### 四、实现题目要求的 Device Kernel
 
 Kernel 的参数仍使用 `GM_ADDR`，因为这是题目模板传入的地址类型。`GM_ADDR` 在该模板中底层是字节指针，因此先转换成 `__gm__ float*`，再按 `block_idx` 计算当前 Block 的起始位置。
 
@@ -108,6 +115,8 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 }
 ```
 
+这段 Kernel 没有引入新的计算策略，而是逐项落实第二部分的计划：`block_idx` 确定当前片段，三个 `__ubuf__` 数组构成局部工作区，三阶段 API 组织该片段的搬入、向量加法与写回。
+
 以 `block_idx = 3` 为例，当前 Block 的偏移是 `3 × 10752 = 32256`，因此它计算：
 
 ```text
@@ -116,9 +125,9 @@ x[32256:43008] + y[32256:43008] -> z[32256:43008]
 
 `asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度参数以字节为单位；`asc_add` 的长度参数以元素个数为单位。
 
-#### 五、在 run_kernel 中启动 Kernel
+#### 五、在入口中提交执行计划
 
-在启动前检查输入输出的数量、类型和长度，可以避免错误的张量规格进入固定长度的 Kernel：
+`run_kernel` 的最后一步是将前面定义的 Kernel 加入模板提供的 Stream。由于本题 Kernel 为固定长度、固定 `float32` 的实现，先检查输入输出的数量、类型和长度，可以避免不匹配的张量规格进入这条固定执行路径：
 
 ```cpp
 if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
@@ -132,13 +141,13 @@ if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
 }
 ```
 
-随后使用题目模板要求的启动形式：
+检查通过后，使用模板提供的 Stream 启动 Kernel：
 
 ```cpp
 add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 ```
 
-三个启动参数的含义如下：
+尖括号内是执行配置，圆括号内是本次处理的 GM 地址：
 
 | 参数 | 本题取值 | 含义 |
 | --- | --- | --- |
@@ -146,7 +155,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
 
-#### 六、完整 kernel.asc
+#### 六、完整 kernel.asc：从模板入口到 Device 计算
 
 ```cpp
 #include <cstdint>
