@@ -32,14 +32,13 @@ $$
 ![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
 *Host Memory 保存 CPU 侧输入输出；数据先复制到设备侧 GM，再由各个 AI Core 将自己负责的数据搬入 UB 计算。*
 
-图中的关键路径是 `Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。Host Memory 不会被 Kernel 直接访问；同样，AI Core 的向量计算也不会直接在 GM 上完成，而是先将当前 Block 的局部数据搬入本 Core 的 UB。
+图中出现的三类存储位置分别承担不同角色：
 
-| 名称 | 所在位置 | 作用 |
-| --- | --- | --- |
-| Host Memory（HM） | CPU 一侧 | 保存 Host 程序准备的输入数据和取回的输出结果。 |
-| Global Memory（GM） | NPU 设备侧 | 保存送入 NPU 的输入 `x`、`y` 与输出 `z`。所有 AI Core 都可访问。 |
-| Unified Buffer（UB） | 单个 AI Core 内部的片上存储 | 保存当前 AI Core 正在计算的一小段输入和输出，访问速度远高于 GM。 |
-| AI Core | NPU 的计算核心 | 执行一个或多个 Block 中的 Kernel 代码。 |
+- **Host Memory（HM）**：位于 CPU 一侧，由 Host 程序申请和访问。它保存准备送入设备的输入数据，以及从设备取回的计算结果。Device 端的 Kernel 不能直接读取这里的数据。
+- **Global Memory（GM）**：位于 NPU 设备侧，容量较大，保存完整的输入 `x`、`y` 和输出 `z`。多个 AI Core 都可以访问 GM，因此它是设备侧各个计算任务共享的数据位置。
+- **Local Memory（本例为 UB）**：位于单个 AI Core 内部的片上存储。它的容量较小、访问速度更高，只保存当前 AI Core 正在处理的一小段数据；其他 AI Core 不能直接使用这块本地空间。Unified Buffer（UB）就是本例使用的 Local Memory。
+
+这三层存储的容量、访问速度和可见范围不同。后面的 Kernel 代码会显式控制数据从一层移动到另一层，而不是由语言运行时自动完成。
 
 一次 Kernel 启动可以配置多个 Block。运行时将这些 Block 调度到可用的 AI Core 上；多个 Block 可以并行执行，但不需要假设某个 Block 永远绑定某个固定 Core。
 
@@ -53,6 +52,8 @@ Block 15: 元素 [161280, 172032)
 ```
 
 #### 三、一个 Block 内部的 Add 计算
+
+认识三个存储层后，再看一次 Add 的完整数据路径：`Host Memory -> GM -> UB -> 计算 -> UB -> GM -> Host Memory`。
 
 Host 先将输入从 Host Memory 复制到 Global Memory。随后 Device 端的 Kernel 只在 Global Memory 与 AI Core 的 UB 之间移动数据：一个 Block 从 GM 读取 `x` 和 `y`，将它们搬入 UB，在 UB 中完成 `x + y`，再把结果写回 GM 中的 `z`。
 
