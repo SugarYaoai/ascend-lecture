@@ -70,14 +70,27 @@ $$
 
 #### 三、一个 Block 怎样处理多个 Tile
 
-`block_idx` 决定当前 Block 在完整向量中的起点，`tileIdx` 决定当前处理该 Block 内的哪一小段：
+`block_idx` 决定当前 Block 在完整向量中的起点，`tileIdx` 决定当前处理该 Block 内的哪一小段。一次循环迭代先定位当前 Tile，再完成该 Tile 的搬入、相加和写回：
 
 ```cpp
 const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
 
 for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
     const uint32_t tileOffset = tileIdx * TILE_LENGTH;
-    // 当前 Tile 的 GM 起点：GM 基址 + blockOffset + tileOffset
+
+    // xGm、yGm、zGm 已经指向当前 Block 的 GM 起点。
+    asc_copy_gm2ub(xLocal, xGm + tileOffset,
+                   TILE_LENGTH * sizeof(float));
+    asc_copy_gm2ub(yLocal, yGm + tileOffset,
+                   TILE_LENGTH * sizeof(float));
+    asc_sync();
+
+    asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
+    asc_sync();
+
+    asc_copy_ub2gm(zGm + tileOffset, zLocal,
+                   TILE_LENGTH * sizeof(float));
+    asc_sync();
 }
 ```
 
@@ -88,20 +101,6 @@ Tile 0: [0, 8192)
 Tile 1: [8192, 16384)
 ...
 Tile 7: [57344, 65536)
-```
-
-每一轮都执行相同的三步：从 GM 读入 `x`、`y` 到 UB，在 UB 中完成 Add，再将 `z` 写回 GM。
-
-```cpp
-asc_copy_gm2ub(xLocal, xGm + tileOffset, TILE_LENGTH * sizeof(float));
-asc_copy_gm2ub(yLocal, yGm + tileOffset, TILE_LENGTH * sizeof(float));
-asc_sync();
-
-asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
-asc_sync();
-
-asc_copy_ub2gm(zGm + tileOffset, zLocal, TILE_LENGTH * sizeof(float));
-asc_sync();
 ```
 
 同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
