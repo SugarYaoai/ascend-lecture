@@ -40,10 +40,6 @@ $$
 
 > **物理约束：** 单个 AI Core 的 UB 名义容量约为 `256 KB`，而这里的三段工作区需要 `768 KB`，达到其三倍。这样的静态 UB 分配不是“性能较差”，而是无法满足片上 SRAM 的容量约束，可能在编译期资源分配或运行时直接失败。
 
-![16 个 Block 下，一个 Block 为什么仍需要切 Tile](assets/tiling/why-tile-16-blocks.png)
-
-*Block 已经完成跨 Core 的任务划分；但每个 Block 自己的 `768 KB` 工作集仍超出 UB，因而还需要第二级切分。*
-
 ##### （二）Block 与 Tile 构成两级切分
 
 Tile 不是重新划分 AI Core 之间的任务，而是把一个 Block 内过长的数据段拆成多份，在同一个 AI Core 中按循环逐份处理：先将一个 Tile 从 GM 搬入 UB，在 UB 中完成加法并写回 GM，再复用同一组 UB 空间处理下一个 Tile。
