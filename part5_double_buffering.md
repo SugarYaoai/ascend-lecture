@@ -1,6 +1,6 @@
 ### 第六节 TensorOJ 实战：Add Medium 的双缓冲流水线
 
-本节继续实现 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)，但目标从“让长向量能够正确完成计算”转为“减少这次计算中的硬件等待时间”。
+本节继续实现 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)，并优化它的执行速度。
 
 第五节的 Tile 循环每次都能正确完成一小段 Add；本节要解决的核心问题是：**当 AI Core 正在计算 Tile `i` 时，怎样同时搬入 Tile `i + 1` 的输入，并写回 Tile `i - 1` 的结果，而且不让不同 Tile 覆盖彼此正在使用的 UB 数据？**
 
