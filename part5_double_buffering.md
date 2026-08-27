@@ -6,7 +6,35 @@
 
 这个问题决定了读、算、写能否在不同 Tile 上重叠推进。为让不同 Tile 使用彼此独立的 UB 工作区、实现读写分离，本节引入**双缓冲技术**。
 
-#### 一、双缓冲要解除的资源冲突
+#### 一、异步指令流：双缓冲的硬件基础
+
+##### （一）顺序等待会让计算单元空转
+
+在普通的顺序控制流中，程序往往先等待输入数据搬完，再开始计算，最后等待结果写回。对于大规模向量或矩阵计算，这种“搬完再算”的安排会让计算单元在搬运期间没有工作可做；计算期间，搬运单元也可能处于空闲状态。
+
+AI Core 的目标不是让所有指令严格依次完成，而是让相互独立的硬件单元各自持续处理自己的任务。只要数据依赖允许，下一条搬运指令可以在前一 Tile 的向量计算尚未结束时开始执行。
+
+##### （二）Scalar 将指令发射到独立流水线
+
+AI Core 内部具有多条异构指令队列。Scalar 计算单元负责解析算子指令流，并将计算或搬运指令发射到对应的独立队列；各队列随后由各自的硬件单元异步推进。
+
+![AI Core 的异构指令队列](assets/double-buffer/ai-core-async-queues.png)
+
+*图 6-1：AI Core 将 Cube、Vector、Scalar 与内存搬运指令送入独立队列，使不同硬件单元能够并行推进。*
+
+在 Ascend C 的流水线标识中，常见的计算队列包括标量队列 `PIPE_S`、向量队列 `PIPE_V` 与矩阵队列 `PIPE_M`；内存搬运还细分为 `PIPE_MTE1`、`PIPE_MTE2`、`PIPE_MTE3` 和 `PIPE_FIX` 等队列。本节的 Add 不使用 Cube 矩阵计算，重点涉及：
+
+- `PIPE_MTE2`：将输入 Tile 从 GM 搬入片上工作区。
+- `PIPE_V`：对 UB 中的 `float32` Tile 执行向量 Add。
+- `PIPE_MTE3`：将输出 Tile 从片上工作区写回 GM。
+
+![Scalar 发射指令与流水线协作](assets/double-buffer/scalar-dispatch-and-pipelines.png)
+
+*图 6-2：Scalar 发射指令；Vector、Cube 与 DMA 搬运单元通过各自队列执行。指令流可以并行推进，数据依赖仍需要同步关系约束。*
+
+异步队列提供了重叠的硬件能力，但不会自动消除数据依赖。同一块 UB Buffer 同时被读写仍会产生数据竞争；要让 MTE2 搬入 Tile `i + 1` 与 Vector 计算 Tile `i` 真正并行，两个 Tile 必须拥有彼此独立的局部工作区。这正是双缓冲需要解决的资源问题。
+
+#### 二、双缓冲如何解除资源冲突
 
 第五节的单缓冲代码只有一套 UB 工作区：`xLocal`、`yLocal`、`zLocal`。当 Vector 单元正在读取其中的 Tile `i` 时，MTE2 不能把 Tile `i + 1` 搬到同一位置；否则新数据会覆盖仍在参与计算的旧数据。于是，下一次搬入只能等待当前计算结束。
 
@@ -19,7 +47,7 @@ Buffer 1: Tile i + 1 正在由 MTE2 搬入
 
 当 Tile `i` 的结果进入写回阶段时，Buffer 0 被归还；之后它就可以装入更靠后的 Tile。两组 Buffer 轮流承担这个角色，解除“下一 Tile 必须等上一 Tile 全部结束”的资源冲突。
 
-#### 二、先确认双缓冲装得下 UB
+#### 三、先确认双缓冲装得下 UB
 
 双缓冲先是一项资源决策，随后才是代码结构。Add Medium 的一个 Tile 长度为 `8192`，一段 `float32` Tile 占用：
 
@@ -47,7 +75,7 @@ constexpr uint32_t TILE_NUM = 8;
 constexpr uint32_t BUFFER_NUM = 2;
 ```
 
-#### 三、用 TPipe 与 TQue 管理 Buffer 所有权
+#### 四、用 TPipe 与 TQue 管理 Buffer 所有权
 
 有两套 Buffer 后，真正困难的不是申请 `6` 个数组，而是判断每一块 UB 什么时候可以写入、什么时候正在计算、什么时候可以复用。手工维护 Buffer 0、Buffer 1 的下标和同步状态，Tile 数增加后很容易发生覆盖。
 
@@ -80,7 +108,7 @@ CopyOut: DeQue -> DataCopy -> FreeTensor(输出 Buffer)
 
 `AllocTensor` 只能获得空闲 Buffer，`EnQue` 将准备完成的 Buffer 交给下一阶段，`DeQue` 只会取得已经准备好的 Buffer，`FreeTensor` 才会让该 Buffer 回到可复用状态。队列因此同时表达了数据依赖和 UB 的复用边界。
 
-#### 四、稳态阶段如何让三条流水线同时工作
+#### 五、稳态阶段如何让三条流水线同时工作
 
 双缓冲运行一段时间后，会进入稳态：三个硬件阶段分别处理不同 Tile，而不是围绕同一个 Tile 排队。
 
@@ -100,7 +128,7 @@ CopyOut:            [T0] [T1] [T2] ...
 
 第一个 Tile 必须先完成搬入，最后一个 Tile 也必须等待写回，因此开始和结束阶段仍会有空档。双缓冲隐藏的是中间稳态中可重叠的等待时间；Tile 数越多，稳态在总执行时间中占比越高，优化越可能体现出来。
 
-#### 五、将双缓冲落实为 Add Medium Kernel
+#### 六、将双缓冲落实为 Add Medium Kernel
 
 ##### （一）三个阶段各自做什么
 
