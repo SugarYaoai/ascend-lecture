@@ -6,7 +6,13 @@
 
 这个问题决定了读、算、写能否在不同 Tile 上重叠推进，也是双缓冲优化速度的出发点。
 
-#### 一、双缓冲要解除的资源冲突
+#### 一、什么是双缓冲
+
+**双缓冲（Double Buffering）** 是指为同一类 Tile 数据准备两套可轮换的 UB 工作区。当前 Tile 使用其中一套 Buffer 进行计算时，下一 Tile 可以使用另一套 Buffer 搬入数据；两组 Buffer 再在后续循环中交换角色。
+
+它不改变 Add 的数学结果，也不是把同一个 Tile 重复计算两次。它提供的是两份彼此独立的片上暂存空间，使不同 Tile 可以同时处于搬入、计算或写回等不同阶段。
+
+#### 二、双缓冲要解除的资源冲突
 
 第五节的单缓冲代码只有一套 UB 工作区：`xLocal`、`yLocal`、`zLocal`。当 Vector 单元正在读取其中的 Tile `i` 时，MTE2 不能把 Tile `i + 1` 搬到同一位置；否则新数据会覆盖仍在参与计算的旧数据。于是，下一次搬入只能等待当前计算结束。
 
@@ -19,7 +25,7 @@ Buffer 1: Tile i + 1 正在由 MTE2 搬入
 
 当 Tile `i` 的结果进入写回阶段时，Buffer 0 被归还；之后它就可以装入更靠后的 Tile。两组 Buffer 轮流承担这个角色，解除“下一 Tile 必须等上一 Tile 全部结束”的资源冲突。
 
-#### 二、先确认双缓冲装得下 UB
+#### 三、先确认双缓冲装得下 UB
 
 双缓冲先是一项资源决策，随后才是代码结构。Add Medium 的一个 Tile 长度为 `8192`，一段 `float32` Tile 占用：
 
@@ -47,7 +53,7 @@ constexpr uint32_t TILE_NUM = 8;
 constexpr uint32_t BUFFER_NUM = 2;
 ```
 
-#### 三、用 TPipe 与 TQue 管理 Buffer 所有权
+#### 四、用 TPipe 与 TQue 管理 Buffer 所有权
 
 有两套 Buffer 后，真正困难的不是申请 `6` 个数组，而是判断每一块 UB 什么时候可以写入、什么时候正在计算、什么时候可以复用。手工维护 Buffer 0、Buffer 1 的下标和同步状态，Tile 数增加后很容易发生覆盖。
 
@@ -80,7 +86,7 @@ CopyOut: DeQue -> DataCopy -> FreeTensor(输出 Buffer)
 
 `AllocTensor` 只能获得空闲 Buffer，`EnQue` 将准备完成的 Buffer 交给下一阶段，`DeQue` 只会取得已经准备好的 Buffer，`FreeTensor` 才会让该 Buffer 回到可复用状态。队列因此同时表达了数据依赖和 UB 的复用边界。
 
-#### 四、稳态阶段如何让三条流水线同时工作
+#### 五、稳态阶段如何让三条流水线同时工作
 
 双缓冲运行一段时间后，会进入稳态：三个硬件阶段分别处理不同 Tile，而不是围绕同一个 Tile 排队。
 
@@ -100,7 +106,7 @@ CopyOut:            [T0] [T1] [T2] ...
 
 第一个 Tile 必须先完成搬入，最后一个 Tile 也必须等待写回，因此开始和结束阶段仍会有空档。双缓冲隐藏的是中间稳态中可重叠的等待时间；Tile 数越多，稳态在总执行时间中占比越高，优化越可能体现出来。
 
-#### 五、将双缓冲落实为 Add Medium Kernel
+#### 六、将双缓冲落实为 Add Medium Kernel
 
 ##### （一）三个阶段各自做什么
 
