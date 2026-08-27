@@ -1,8 +1,10 @@
 ### 第六节 TensorOJ 实战：Add Medium 的双缓冲流水线
 
-**本节题目链接：** [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)
+本节继续实现 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)，但目标从“让长向量能够正确完成计算”转为“减少这次计算中的硬件等待时间”。
 
-第五节中，Tile 将一个 Block 的 `65536` 个元素拆成 `8` 次、每次 `8192` 个元素的计算，解决了 UB 装不下完整 Block 的问题。但单缓冲循环仍把“搬入、计算、写回”串成一条等待链。本节保持 Add Medium 的数据规模、`16` 个 Block 与 `8192` 的 Tile 长度不变，只改变一个问题：如何让不同 Tile 的搬运与计算在同一个 AI Core 内重叠推进。
+第五节的 Tile 循环每次都能正确完成一小段 Add；本节要解决的核心问题是：**当 AI Core 正在计算 Tile `i` 时，怎样同时搬入 Tile `i + 1` 的输入，并写回 Tile `i - 1` 的结果，而且不让不同 Tile 覆盖彼此正在使用的 UB 数据？**
+
+这个问题决定了读、算、写能否在不同 Tile 上重叠推进，也是双缓冲优化速度的出发点。
 
 #### 一、双缓冲要解除的资源冲突
 
