@@ -30,7 +30,11 @@
     body {
       margin: 0;
       min-width: 320px;
-      background: var(--page);
+      background-color: #edf3f7;
+      background-image: url("assets/backgrounds/ascend-npu-circuit-pattern.png");
+      background-position: center top;
+      background-size: 1680px auto;
+      background-attachment: fixed;
       color: var(--ink);
       font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
       line-height: 1.78;
@@ -116,7 +120,8 @@
     main {
       min-width: 0;
       padding: 46px clamp(26px, 6vw, 88px) 86px;
-      background: var(--paper);
+      background: rgba(255, 255, 255, .88);
+      backdrop-filter: blur(2px);
     }
 
     article { max-width: 900px; margin: 0 auto; }
