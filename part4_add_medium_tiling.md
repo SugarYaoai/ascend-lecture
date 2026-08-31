@@ -1,193 +1,125 @@
 ### 第五节 TensorOJ 实战：Add Medium 的 Tile 分块
 
-#### 一、Add Medium 题目介绍
+#### 一、问题引入：更大数据量带来的片上内存挑战
 
 **本节题目链接：** [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)
 
-Add Medium 仍然是两个一维 `float32` 向量的逐元素加法：
+Add Medium 依然是两个一维 `float32` 向量的逐元素加法：
 
 $$
 z_i = x_i + y_i, \quad i \in [0, 1048576)
 $$
 
-与 Add Simple 相同，开发者实现 `kernel.asc` 中的 Device 端 Kernel 和启动语句；输入 `x`、`y` 与输出 `z` 的形状均为 `(1048576,)`。计算规则没有变，变化的是单次任务的数据规模：
+计算公式没有变，但单次任务的数据规模扩大到 $N = 1048576$，即百万级元素。本题固定启动 `16` 个 Block，因此每个 Block 需要处理 `65536` 个元素。核心矛盾在于：单个 Block 的输入和输出已经无法一次性放入片上 UB。
 
-$$
-N = 1048576
-$$
+#### 二、片上内存瓶颈与 Tile 切分的必要性
 
-本节固定启动 `16` 个 Block，因此每个 Block 负责 `65536` 个元素。若仍像 Add Simple 那样将该 Block 的输入和输出一次放入 UB，三段缓冲区将需要 `768 KB`，超过当前 AI Core 可用的片上工作空间。Add Medium 的关键不在于改写加法公式，而在于让同一段 Block 数据分批进入 UB：每次只处理一个 **Tile**，循环完成整段数据。
+##### （一）为什么仅靠 Block 切分还不够
 
-#### 二、片上内存瓶颈与 Tile 的必要性
+Block 切分解决的是多核分工：把长向量切成多段，再由多个 AI Core 并行处理。它能缩短整体运行时间，却无法改变单个 AI Core 内部 UB 的容量上限。
 
-##### （一）多核切分仍然无法消除 UB 容量限制
-
-Block 切分解决的是“多个 AI Core 如何同时分工”：完整向量被划为多个互不重叠的区间，运行时把这些逻辑 Block 调度到可用的 AI Core 上。它能够缩短总任务的执行时间，却不能让单个 AI Core 的 UB 变大。
-
-这是 NPU 算子开发中最基本的物理矛盾：GM 容量大，可以保存完整张量，但距离计算单元较远；UB 位于 AI Core 内部，访问很快，却只有几百 KB 量级的片上 SRAM。对于更长的张量，即使已经把任务分给多个 Core，单个 Block 分到的数据仍可能装不进 UB。
-
-本题先以 `16` 个 Block 均分长度为 `1048576` 的向量：
+本题将长度为 `1048576` 的向量均分给 `16` 个 Block：
 
 $$
 \text{BLOCK\_LENGTH} = 1048576 / 16 = 65536
 $$
 
-一个 Block 必须同时保留自己的输入 `x`、输入 `y` 和输出 `z`。若将这 `65536` 个 `float32` 元素一次性全部放入 UB，需要：
+一个 Block 计算时需要同时保留输入 `x`、输入 `y` 与输出 `z`。若将 `65536` 个 `float32` 元素一次性全部装入 UB，所需空间为：
 
 $$
 3 \times 65536 \times 4\text{ B} = 768\text{ KB}
 $$
 
-> **物理约束：** 单个 AI Core 的 UB 名义容量约为 `256 KB`，而这里的三段工作区需要 `768 KB`，达到其三倍。这样的静态 UB 分配不是“性能较差”，而是无法满足片上 SRAM 的容量约束，可能在编译期资源分配或运行时直接失败。
+> **物理约束：** 单个 AI Core 的 UB 名义容量约为 `256 KB`，而全量载入需要 `768 KB`，达到容量上限的三倍。这不是性能较差，而是片上 SRAM 容量不足；静态分配可能在编译阶段或运行初期直接失败。
 
 ##### （二）Block 与 Tile 构成两级切分
 
-Tile 不是重新划分 AI Core 之间的任务，而是把一个 Block 内过长的数据段拆成多份，在同一个 AI Core 中按循环逐份处理：先将一个 Tile 从 GM 搬入 UB，在 UB 中完成加法并写回 GM，再复用同一组 UB 空间处理下一个 Tile。
+Tile 并不重新划分 AI Core 之间的分工，而是在同一个 AI Core 内部把过长的数据段拆成多份，通过循环分批处理：
 
-因此，本例有两层不同的分工：
+- **Block 切分**：空间上的任务划分。`16` 个 Block 分管不同的 GM 数据区间，实现多核并行。
+- **Tile 切分**：单核内部的分批处理。一个 Block 用 `for` 循环复用同一组 UB 空间，逐批完成自己的数据。
 
-- **Block 切分**：空间上的任务划分。`16` 个 Block 分别负责完整向量的不同区间，使多个 AI Core 可以并行工作。
-- **Tile 切分**：单个 Block 内的时序分批。一个 Block 用循环处理多个 Tile，以有限的 UB 容量吞吐自己的完整数据段。
+本例选择 `TILE_LENGTH = 8192`。一个 Tile 的 `x`、`y`、`z` 三块 `float32` 缓冲区占用：
 
-`TILE_LENGTH` 表示一个 Tile 包含的元素数，也是一次从 GM 搬入 UB、完成加法并写回 GM 的处理粒度。本例取 `8192`：一个 `float32` Tile 的单段数据为 `8192 × 4 B = 32 KB`，既满足 `32 B` 对齐，也让 `x`、`y`、`z` 三段工作区保持在较宽裕的 UB 预算内。
+$$
+3 \times 8192 \times 4\text{ B} = 96\text{ KB}
+$$
 
-因此，执行参数为：
+这组参数既满足 `32 B` 对齐，也为 UB 留出了余量。完整配置如下：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
 constexpr uint32_t BLOCK_LENGTH = 65536;
 constexpr uint32_t TILE_LENGTH = 8192;
-constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;  // 8
+constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
+// 每个 Block 循环 8 次。
 ```
 
-由 `TILE_LENGTH = 8192` 可得，每个 Tile 的 `x`、`y`、`z` 三块 `float32` 缓冲区占用：
+通过 `8` 次 Tile 循环，一个 Block 完成自己的 `65536` 个元素；任意时刻只有一个 `96 KB` 的 Tile 工作集驻留在 UB 中，而不是不可容纳的 `768 KB`。
 
-$$
-3 \times 8192 \times 4\text{ B} = 98304\text{ B} = 96\text{ KB}
-$$
+#### 三、单个 AI Core 如何循环处理 Tile
 
-于是，一个 Block 用 `8` 次循环完成 `65536` 个元素；任意时刻只有一个 `96 KB` 的 Tile 工作集驻留在 UB 中。这既避开了 `768 KB` 的片上容量越界，也为后续将数据搬运与计算重叠保留了空间。
-
-#### 三、一个 Block 怎样处理多个 Tile
-
-`block_idx` 决定当前 Block 在完整向量中的起点，`tileIdx` 决定当前处理该 Block 内的哪一小段。一次循环迭代先定位当前 Tile，再完成该 Tile 的搬入、相加和写回：
+在 C++ API 中，`block_idx` 先定位当前 Block 的 GM 数据范围；随后 `tileOffset` 在每轮循环中推进，三块 `LocalTensor` 则持续复用同一份 UB 空间：
 
 ```cpp
-const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
+template <uint32_t blockLength, uint32_t tileLength>
+__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+{
+    AscendC::InitSocState();
 
-for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
-    const uint32_t tileOffset = tileIdx * TILE_LENGTH;
+    // 1. 绑定当前 Block 的 GM 视图。
+    const uint32_t blockOffset = block_idx * blockLength;
+    AscendC::GlobalTensor<float> xGm, yGm, zGm;
+    xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + blockOffset, blockLength);
+    yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + blockOffset, blockLength);
+    zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + blockOffset, blockLength);
 
-    // xGm、yGm、zGm 已经指向当前 Block 的 GM 起点。
-    asc_copy_gm2ub(xLocal, xGm + tileOffset,
-                   TILE_LENGTH * sizeof(float));
-    asc_copy_gm2ub(yLocal, yGm + tileOffset,
-                   TILE_LENGTH * sizeof(float));
-    asc_sync();
+    // 2. 只分配单个 Tile 尺寸的 UB 工作区，共 96 KB。
+    AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
+    auto xLocal = ubAllocator.Alloc<float, tileLength>();
+    auto yLocal = ubAllocator.Alloc<float, tileLength>();
+    auto zLocal = ubAllocator.Alloc<float, tileLength>();
 
-    asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
-    asc_sync();
+    // 3. 依次处理当前 Block 内的全部 Tile。
+    constexpr uint32_t tileNum = blockLength / tileLength;
+    for (uint32_t tileIdx = 0; tileIdx < tileNum; ++tileIdx) {
+        const uint32_t tileOffset = tileIdx * tileLength;
 
-    asc_copy_ub2gm(zGm + tileOffset, zLocal,
-                   TILE_LENGTH * sizeof(float));
-    asc_sync();
+        // 搬入当前 Tile。
+        AscendC::DataCopy(xLocal, xGm[tileOffset], tileLength);
+        AscendC::DataCopy(yLocal, yGm[tileOffset], tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        // 在 UB 中执行向量加法。
+        AscendC::Add(zLocal, xLocal, yLocal, tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        // 写回当前 Tile 的结果。
+        AscendC::DataCopy(zGm[tileOffset], zLocal, tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
 }
 ```
 
-以 `Block 0` 为例，它的工作范围是 `[0, 65536)`；循环会依次处理：
+以 Block `0` 为例，它负责区间 `[0, 65536)`；循环会依次处理 `Tile 0: [0, 8192)`、`Tile 1: [8192, 16384)` 直到 `Tile 7: [57344, 65536)`。每轮都经历同一条数据路径：GM 搬入 UB，在 UB 中相加，再将结果写回 GM。
 
-```text
-Tile 0: [0, 8192)
-Tile 1: [8192, 16384)
-...
-Tile 7: [57344, 65536)
-```
+#### 四、串行 Tile 循环中的硬件等待
 
-同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
+##### （一）搬运与计算串行：Vector 单元与 MTE 引擎互等
 
-#### 四、Tile 循环中的等待时间
-
-##### 1. 硬件空转瓶颈（Pipeline Stall）
-
-Tile 切分成功解决了 `768 KB` UB 空间溢出的问题，但“能装下”不等于“跑满了硬件性能”。
-
-在 AI Core 内部，负责内存搬运的 **MTE 引擎（Memory Transfer Engine）** 与负责向量计算的 **Vector 计算单元** 是独立的物理硬件模块。但在当前的 Tile 循环实现中，读写搬运与向量计算被绑定在同一个时序管道内：
+Tile 切分解决了 UB 装不下的问题，但当前串行循环还没有充分利用硬件。在 AI Core 中，MTE 搬运引擎与 Vector 计算单元是相互独立的硬件；而上面的循环在每个阶段后都加入屏障，使操作必须按顺序推进：
 
 $$
 \text{Tile 0: [MTE2 搬入]} \longrightarrow \text{[Vector 计算]} \longrightarrow \text{[MTE3 写回]} \longrightarrow \text{Tile 1: [MTE2 搬入]} \dots
 $$
 
-每个阶段后的同步屏障强制要求前一动作彻底完成。这导致读写与计算只能完全交替运行，产生了明显的硬件空转：
+这会造成两类等待：
 
-- **Vector 单元在等搬运**：MTE2 正在从 GM 向 UB 搬运 Tile 0 时，Vector 单元处于挂起等待状态。
-- **MTE 引擎在等计算**：Vector 单元正在执行加法运算时，MTE 搬运引擎也无法开始下一 Tile 的搬运。
+- **Vector 单元等待搬运**：MTE2 从 GM 搬入 Tile `0` 时，Vector 计算单元没有可计算的数据。
+- **MTE 引擎等待计算**：Vector 单元计算加法时，MTE 无法预读下一个 Tile。
 
-##### 2. 读写与计算未分离的物理瓶颈
+##### （二）根因：单缓冲区引发数据竞争
 
-阻碍读写搬运与向量计算重叠（Overlap）的根本原因，在于**局部缓冲区的资源争抢**。
+当前只开辟了一套 UB 缓冲区：`xLocal`、`yLocal` 与 `zLocal`。如果让 MTE 在 Vector 计算 Tile `0` 的同时预读 Tile `1`，新旧 Tile 会写入同一块片上地址，造成数据覆盖与脏读。
 
-当前实现只开辟了一套物理 UB 缓冲区：`xLocal`、`yLocal` 与 `zLocal`。如果 MTE 引擎在 Vector 计算 Tile 0 的同时搬入 Tile 1，新旧 Tile 的数据就会写入同一块 UB 空间，造成数据覆盖、数据竞争或脏读。
-
-因此，当前 Tile 循环先验证静态切片逻辑与 API 调用的正确性；下一节再用两组可轮换的 UB 工作区解除这份资源冲突，让不同 Tile 的搬运、计算与写回能够重叠推进。
-
-#### 五、完整 kernel.asc
-
-下面的实现固定处理长度为 `1048576` 的 `float32` 向量。每个 Block 处理 `65536` 个元素，并在 Block 内循环完成 `8` 次 Tile 计算。
-
-```cpp
-#include <cstdint>
-#include "kernel_operator.h"
-#include "c_api/asc_simd.h"
-
-constexpr uint32_t NUM_BLOCKS = 16;
-constexpr uint32_t BLOCK_LENGTH = 65536;
-constexpr uint32_t TILE_LENGTH = 8192;
-constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
-constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
-
-__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
-{
-    asc_init();
-
-    const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
-    __gm__ float* xGm = reinterpret_cast<__gm__ float*>(x) + blockOffset;
-    __gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + blockOffset;
-    __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + blockOffset;
-
-    __ubuf__ float xLocal[TILE_LENGTH];
-    __ubuf__ float yLocal[TILE_LENGTH];
-    __ubuf__ float zLocal[TILE_LENGTH];
-
-    for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
-        const uint32_t tileOffset = tileIdx * TILE_LENGTH;
-
-        asc_copy_gm2ub(xLocal, xGm + tileOffset, TILE_LENGTH * sizeof(float));
-        asc_copy_gm2ub(yLocal, yGm + tileOffset, TILE_LENGTH * sizeof(float));
-        asc_sync();
-
-        asc_add(zLocal, xLocal, yLocal, TILE_LENGTH);
-        asc_sync();
-
-        asc_copy_ub2gm(zGm + tileOffset, zLocal, TILE_LENGTH * sizeof(float));
-        asc_sync();
-    }
-}
-
-extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
-                           GM_ADDR y, const TensorGroupInfo& info_y,
-                           GM_ADDR z, const TensorGroupInfo& info_z,
-                           int64_t availableCoreNum, aclrtStream stream)
-{
-    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
-        info_z.numTensors != 1 || info_x.tensors[0].dtype != 0 ||
-        info_y.tensors[0].dtype != 0 || info_z.tensors[0].dtype != 0 ||
-        info_x.tensors[0].shape[0] != TOTAL_LENGTH ||
-        info_y.tensors[0].shape[0] != TOTAL_LENGTH ||
-        info_z.tensors[0].shape[0] != TOTAL_LENGTH ||
-        availableCoreNum <= 0) {
-        return;
-    }
-
-    add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
-}
-```
+因此，下一节会引入双缓冲（Double Buffering）：为相邻 Tile 准备两套可轮换的 UB 工作区，让 Tile $i$ 的计算与 Tile $i+1$ 的搬运能够安全地重叠推进。
