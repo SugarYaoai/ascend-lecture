@@ -25,31 +25,32 @@
 
 让 CPU 管控制，让 NPU 跑算力，才能最大化整个系统的吞吐性能。
 
-#### 二、昇腾 NPU 的存储与计算架构
+#### 二、昇腾 NPU 的架构与并行抽象
 
-NPU 的并行计算并不发生在一块统一的内存中。CPU 侧负责准备数据和提交任务；NPU 设备侧的 Global Memory（GM）保存完整输入输出；每个 AI Core 再拥有靠近计算单元、容量有限但访问很快的片上工作区。理解 AI Core 与 Block 的区别，是理解后续 Kernel 如何并行执行的前提。
+昇腾 NPU 并不是一个单体 CPU，而是一个高度集成的多核并行计算设备。理解 NPU 如何将一个高层算子任务拆解到物理硬件上，是编写高性能 Kernel 的核心前提。
 
 ![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
 
 *图 1-2：Host 与 NPU 之间传递输入输出；NPU 的 GM 保存完整数据，各 AI Core 读取自己负责的片段并在本地工作区完成计算。*
 
-##### （一）AI Core：物理计算单元
+##### （一）AI Core：物理计算核心与底层硬件构成
 
-**AI Core** 是昇腾 NPU 内部独立工作的物理计算单元。可以把它理解为 NPU 中专门处理大批量张量数据的计算核：多个 AI Core 能够同时处理不同的数据片段，而单个 AI Core 则负责完成自己片段的搬运与计算。
+**AI Core** 是昇腾 NPU 内部最核心的独立物理计算单元。多个 AI Core 可以同时处理不同的数据片段；每个 AI Core 自身又集成了算力引擎、内存搬运单元与片上高速存储：
 
-- **Vector 单元**：负责向量运算的硬件执行引擎，支持 SIMD（单指令多数据）范式；一条指令可处理一批连续元素。
-- **Unified Buffer（UB）**：AI Core 内部的片上高速 SRAM。它读写延迟低、容量有限，通常只有几百 KB，用于保存当前计算的输入与输出工作集。
-- **MTE（Memory Transfer Engine）**：独立的内存搬运引擎，负责在片外大容量 GM 与片上 UB 之间进行 DMA 数据传输。
+- **Vector 单元（向量引擎）**：负责向量运算，支持 SIMD（单指令多数据）范式。一条向量指令可以吞吐一批连续元素的计算，是本章 Add 的主要计算单元。
+- **Cube 单元（矩阵引擎）**：专门面向矩阵乘法（MatMul）与卷积（Conv）等高密度矩阵计算。本书第三章讨论矩阵算子时会进一步介绍它与 L1/L0 等专用片上存储的配合。
+- **Unified Buffer（UB）**：AI Core 内部的片上高速 SRAM。它读写延迟很低，但容量昂贵且有限；本书示例按约 `256 KB` 的名义容量进行预算，用它保存当前计算直接引用的输入与输出工作集。
+- **MTE（Memory Transfer Engine，内存搬运引擎）**：独立的 DMA 数据搬运单元，负责在片外大容量 Global Memory（GM）与片上 UB 之间进行高带宽数据传输。
 
-完整张量通常保存在 GM；当前 AI Core 真正需要计算的一小段数据才会通过 MTE 进入 UB。Vector 单元在 UB 中产生结果后，MTE 再将结果写回 GM。Host Memory（HM）位于 CPU 一侧，负责准备输入和取得结果，NPU Kernel 不会直接把它作为计算输入。
+以本章的 Vector Add 为例，完整张量通常保存在 GM 中；MTE 将当前片段搬入 UB，Vector 单元在 UB 中完成加法，MTE 再将结果写回 GM。Host Memory（HM）位于 CPU 一侧，用于准备输入和取得结果，NPU Kernel 不会直接把它作为计算输入。
 
-##### （二）Block：空间维度的多核任务抽象
+##### （二）Block：空间维度的多核任务切分
 
-**Block** 是昇腾 Kernel 在多核并行维度上的逻辑任务单位。Kernel 启动时会指定本次计算包含多少个 Block；运行时调度器再将这些逻辑 Block 分发到可用的物理 AI Core 上执行。
+**Block** 是昇腾算子在空间多核并行维度上的逻辑任务划分单位。CPU 启动一个 Kernel 时，会指定本次任务包含多少个 Block；NPU 的运行时调度器再将这些逻辑 Block 分发给可用的物理 AI Core 执行。
 
-开发者会把一个大张量划分为多个互不重叠的数据段，每个 Block 只处理其中一段。Block 内通过 `block_idx` 计算当前数据段的偏移量，从而让多个 Block 在同一份 Kernel 代码下处理不同位置的数据，形成无冲突的空间并行。
+在算子开发中，一个大张量会被划分为多个互不重叠的数据段。每个 Block 通过硬件提供的 `block_idx` 计算属于当前任务的数据偏移量，从而让同一份 Kernel 代码在多个 Block 中并发处理不同数据区域，形成空间多核并行。
 
-需要区分逻辑与物理：`block_idx` 是当前**逻辑 Block 的编号**，不是物理 AI Core 编号。运行时会根据空闲情况调度 Block；一个 AI Core 可以先后执行多个 Block，某个 Block 也不保证永久绑定到固定 Core。后续 Add 代码将用 `block_idx` 计算数据偏移，亲自实现这份分工。
+需要明确的是：`block_idx` 表示逻辑任务编号，而不是固定的物理 AI Core ID。调度器会根据 AI Core 的空闲状态动态分发 Block；一个 AI Core 可以先后执行多个 Block，某个 Block 也不保证永久绑定到固定 Core。后续 Add 代码将用 `block_idx` 计算数据偏移，落实这份分工。
 
 #### 三、昇腾 NPU 算子的高性能来源
 
