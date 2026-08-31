@@ -1,15 +1,15 @@
 ### 第四节 TensorOJ 实战：基于 C++ API 实现 Add 算子
 
-第三节用 C API 写 Add 时，开发者亲自管理 GM 裸指针、UB 数组以及字节和元素两套长度单位。这种方式能直接看到硬件如何工作，但真实算子中很容易遇到两类问题：
+第三节用 C API 写 Add 时，开发者需要亲自管理 GM 裸指针、UB 静态数组，还要时刻切换“字节数”与“元素个数”两套单位。这种底层写法能帮助我们理解硬件原理，但在实际算子开发中极易引发两类问题：
 
-- **单位混淆**：DMA 搬运接口需要 `10752 * sizeof(float)` 这样的字节数，向量加法却只需要 `10752` 个元素。漏写一次 `sizeof(float)` 往往仍能通过编译，却会让搬运范围错误，进而导致结果异常或设备侧访问失败。
-- **复杂流水线难以手工维护**：直接声明 `__ubuf__` 数组适合单次搬入、计算和写回；当一个 Block 需要多个 Tile、多个 Buffer 或双缓冲时，开发者必须自己计算每块 UB 的位置、复用时机和同步状态，代码很容易失去可读性。
+- **单位混淆的隐蔽 Bug**：DMA 搬运接口需要传入 `10752 * sizeof(float)`，而向量加法只需要传入 `10752`。一旦漏写 `sizeof(float)`，编译器不会报错，却会导致数据搬运截断或越界访存。
+- **复杂流水线难以手工维护**：直接声明 `__ubuf__` 数组只适合简单的“单次搬入、计算、写回”。当后续面临 Tile 切分、多 Buffer 循环复用或流水线掩盖时，手工计算每块 UB 的偏移量与生命周期极易出错，代码可读性也会急剧下降。
 
-C++ API 的作用就是降低这两类错误的概率：`GlobalTensor<float>`、`LocalTensor<float>` 让代码始终带着元素类型和长度来描述数据；`LocalMemAllocator` 先把 UB 中的局部数据组织为明确的对象，后续可以自然升级到用 `TPipe`、`TQue` 管理缓冲区复用与入队出队。
+C++ API 的核心使命就是利用类型系统解决这些痛点。它引入 `GlobalTensor<float>` 与 `LocalTensor<float>`，让数据携带确切的类型与长度信息；同时通过 `LocalMemAllocator` 结构化地管理 UB 片上空间，为后续升级到 `TPipe`、`TQue` 队列化流水线奠定基础。
 
-C++ API 不会自动完成任何 GM/UB 搬运，也不会替代容量、对齐和边界检查。它只是给裸地址和 UB 数组加上更清楚的类型与长度信息，并为后续的流水线优化提供更容易维护的代码结构。
+C++ API 并没有改变底层的物理搬运规则。它只是在裸地址与硬件 SRAM 之上套了一层强类型外衣，在编译期帮助开发者拦截大部分低级错误。
 
-#### 一、从 C API 到 C++ API
+#### 一、从 C API 到 C++ API 的重构三步法
 
 ##### （一）编译期模板参数与 GM 视图绑定
 
@@ -92,23 +92,41 @@ $$
 
 这段代码直接给出了当前 AI Core 的 UB 工作区：三段 `float32` 张量，共 `126 KB`。局部资源的类型、长度和分配位置集中在同一处，后续阅读 `DataCopy` 与 `Add` 时不必再回溯数组地址和大小。
 
-##### （三）带类型的 DataCopy 与流水线屏障控制
+##### （三）强类型 DataCopy 与流水线屏障
 
-GM 地址和 UB 工作区建立后，数据按三个依赖阶段执行：搬入 `x`、`y`，在 UB 中计算 `z`，再写回 `z`。
+GM 视图与 UB 工作区建立后，数据流仍然遵循“搬入 -> 计算 -> 写回”三个阶段；改变的是长度的表达方式。C API 需要为搬运接口手动换算字节数，C++ API 则由 Tensor 的 `float` 类型推导单元素宽度：
 
-```cpp
-AscendC::DataCopy(xLocal, xGm, blockLength);
+<div class="api-compare">
+  <div class="api-compare-side c-api">
+    <span class="api-compare-label">第三节：C API</span>
+    <pre><code class="language-cpp">asc_copy_gm2ub(xLocal, xGm,
+    BLOCK_LENGTH * sizeof(float));
+asc_copy_gm2ub(yLocal, yGm,
+    BLOCK_LENGTH * sizeof(float));
+asc_sync();
+
+asc_add(zLocal, xLocal, yLocal, BLOCK_LENGTH);
+asc_sync();
+
+asc_copy_ub2gm(zGm, zLocal,
+    BLOCK_LENGTH * sizeof(float));
+asc_sync();</code></pre>
+  </div>
+  <div class="api-compare-side cpp-api">
+    <span class="api-compare-label">本节：C++ API</span>
+    <pre><code class="language-cpp">AscendC::DataCopy(xLocal, xGm, blockLength);
 AscendC::DataCopy(yLocal, yGm, blockLength);
-AscendC::PipeBarrier<PIPE_ALL>();
+AscendC::PipeBarrier&lt;PIPE_ALL&gt;();
 
 AscendC::Add(zLocal, xLocal, yLocal, blockLength);
-AscendC::PipeBarrier<PIPE_ALL>();
+AscendC::PipeBarrier&lt;PIPE_ALL&gt;();
 
 AscendC::DataCopy(zGm, zLocal, blockLength);
-AscendC::PipeBarrier<PIPE_ALL>();
-```
+AscendC::PipeBarrier&lt;PIPE_ALL&gt;();</code></pre>
+  </div>
+</div>
 
-由于 `DataCopy` 的源和目的都是 `float` Tensor，`blockLength` 表示元素个数；C++ API 已从 Tensor 类型中得知单元素大小，因此不需要像 C API 那样手动写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内部的流水线屏障：它保证输入片段写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。此处每种局部张量只有一块，三个阶段按依赖顺序执行。
+`DataCopy` 的源和目的都已是 `float` Tensor，因此 `blockLength` 直接表示元素个数，不必手写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内的流水线屏障：它保证输入写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。
 
 #### 二、C API 与 C++ API 的架构范式对比
 
