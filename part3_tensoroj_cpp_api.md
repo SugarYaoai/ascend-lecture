@@ -133,7 +133,7 @@ AscendC::PipeBarrier&lt;PIPE_ALL&gt;();</code></pre>
 | 架构维度 | C API | C++ API | 工程价值 |
 | --- | --- | --- | --- |
 | **GM 地址、类型与范围** | `__gm__ float*` 配合手写指针偏移 | `GlobalTensor<float>` 绑定地址、元素类型和当前 Block 长度 | 将原本分散在指针、偏移量和长度常量中的约束集中起来，减少类型不匹配和偏移范围写错的机会。 |
-| **搬运长度与步进单位** | 搬运写字节数：`BLOCK_LENGTH * sizeof(float)`；计算写元素数 | `DataCopy`、`Add` 统一传入 `blockLength` 个元素 | Tensor 类型提供元素宽度，开发者无需在每次搬运时手动换算 `sizeof(float)`，避免字节数与元素数混用。 |
+| **长度参数的计量单位** | 搬运写字节数：`BLOCK_LENGTH * sizeof(float)`；计算写元素数 | `DataCopy`、`Add` 统一传入 `blockLength` 个元素 | Tensor 类型提供元素宽度，开发者无需在每次搬运时手动换算 `sizeof(float)`，避免字节数与元素数混用。 |
 | **UB 资源与流水线演进** | `__ubuf__` 静态数组直接占用 UB | `LocalMemAllocator` + `LocalTensor` 描述 UB 局部资源 | 当前能集中管理 UB 对象的类型和长度；当数据流扩展为多 Tile、多 Buffer 时，可进一步过渡到 `TPipe`、`TQue` 的缓冲区复用与队列调度。 |
 
 底层执行模型并未改变：
