@@ -2,7 +2,7 @@
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-#### 一、题目模板与开发者交付内容
+#### 一、题目模板与待完成内容
 
 打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：定义在 NPU 上执行的 `add_custom` Kernel，以及在 `run_kernel` 中按给定接口启动它。
 
@@ -39,7 +39,7 @@ extern "C" void run_kernel(
 
 #### 二、`add_custom` Kernel 算子实现
 
-##### （一）第一步：手算切片参数与 UB 内存预算
+##### （一）第一步：手算切片参数与 UB 容量预算
 
 编写 `add_custom` 前，必须先算清两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
 
@@ -52,8 +52,8 @@ constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 这组参数同时满足三项底层硬件限制：
 
 - **多核负载均衡**：`172032` 个元素被 16 个逻辑 Block 平分，每个 Block 负责 `10752` 个元素。
-- **32B 物理对齐**：单段 `float32` 数据长度为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$，严格满足连续数据按 `32 B` 整数倍组织的物理要求。
-- **UB 内存预算**：`xLocal`、`yLocal`、`zLocal` 三段片上缓冲区总共占用：
+- **32 字节对齐**：单段 `float32` 数据长度为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$，严格满足连续数据按 `32 B` 整数倍组织的对齐要求。
+- **UB 容量预算**：`xLocal`、`yLocal`、`zLocal` 三段片上缓冲区总共占用：
 
 $$
 3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}

@@ -105,7 +105,7 @@ Tile 7: [57344, 65536)
 
 同一组 `xLocal`、`yLocal`、`zLocal` 会在下一轮循环中复用，因此 UB 的占用始终是一个 Tile 的 `96 KB`，而不是整个 Block 的 `768 KB`。
 
-#### 四、Tile 循环中的流水线空档
+#### 四、Tile 循环中的等待时间
 
 ##### 1. 硬件空转瓶颈（Pipeline Stall）
 

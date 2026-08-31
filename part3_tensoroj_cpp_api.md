@@ -128,7 +128,7 @@ AscendC::PipeBarrier&lt;PIPE_ALL&gt;();</code></pre>
 
 `DataCopy` 的源和目的都已是 `float` Tensor，因此 `blockLength` 直接表示元素个数，不必手写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内的流水线屏障：它保证输入写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。
 
-#### 二、C API 与 C++ API 的架构范式对比
+#### 二、C API 与 C++ API 的代码组织差异
 
 | 架构维度 | C API | C++ API | 工程价值 |
 | --- | --- | --- | --- |

@@ -75,7 +75,7 @@ constexpr uint32_t TILE_NUM = 8;
 constexpr uint32_t BUFFER_NUM = 2;
 ```
 
-#### 四、用 TPipe 与 TQue 管理 Buffer 所有权
+#### 四、用 TPipe 与 TQue 管理缓冲区的使用状态
 
 有两套 Buffer 后，真正困难的不是申请 `6` 个数组，而是判断每一块 UB 什么时候可以写入、什么时候正在计算、什么时候可以复用。手工维护 Buffer 0、Buffer 1 的下标和同步状态，Tile 数增加后很容易发生覆盖。
 
@@ -108,7 +108,7 @@ CopyOut: DeQue -> DataCopy -> FreeTensor(输出 Buffer)
 
 `AllocTensor` 只能获得空闲 Buffer，`EnQue` 将准备完成的 Buffer 交给下一阶段，`DeQue` 只会取得已经准备好的 Buffer，`FreeTensor` 才会让该 Buffer 回到可复用状态。队列因此同时表达了数据依赖和 UB 的复用边界。
 
-#### 五、稳态阶段如何让三条流水线同时工作
+#### 五、稳定运行阶段（稳态）：三条流水线如何同时工作
 
 双缓冲运行一段时间后，会进入稳态：三个硬件阶段分别处理不同 Tile，而不是围绕同一个 Tile 排队。
 

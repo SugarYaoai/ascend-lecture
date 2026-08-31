@@ -2,7 +2,7 @@
 
 在异构计算中，一段完整的算子程序分为两部分：运行在 NPU 芯片内部的底层计算代码称为 **Kernel（核函数）**，运行在 CPU 上、负责全局调度的程序称为 **Host 程序**。Host 程序像“指挥官”，负责在设备内存中开辟空间、把数据送进 NPU，并发号施令启动计算；Kernel 则像一线工人，是专门在 NPU 的 AI Core 内部执行的底层 C/C++ 代码。
 
-启动 Kernel 时，NPU 会并行派生出多个逻辑任务（Block）。每个任务运行同一份 Kernel 代码，各自处理数据的一个切片。上一节介绍了 Host、GM、UB、MTE 与 Vector Unit 的分工；本节将这套架构落实到一个固定规格的 Add 算子：手算切片参数分配 Block，为每个 Block 规划 UB 内存预算，最后分别编写 Device 端 Kernel 与 Host 端调度代码，完成“搬入 -> 计算 -> 写回”的数据闭环。
+启动 Kernel 时，NPU 会并行派生出多个逻辑任务（Block）。每个任务运行同一份 Kernel 代码，各自处理数据的一个切片。上一节介绍了 Host、GM、UB、MTE 与 Vector Unit 的分工；本节将这套架构落实到一个固定规格的 Add 算子：手算切片参数分配 Block，为每个 Block 规划 UB 容量预算，最后分别编写 NPU 端核函数与 Host 端调度代码，完成“搬入 -> 计算 -> 写回”的数据闭环。
 
 #### 一、Add 算子功能介绍
 
@@ -27,7 +27,7 @@ $$
 
 编写 Kernel 代码前，需要先明确两个核心问题：多核之间如何拆分任务，也就是空间维度的分工；单核内部数据如何流动并完成计算，也就是时间维度的闭环。
 
-##### （一）第一步：手算切片参数与 UB 内存预算
+##### （一）第一步：手算切片参数与 UB 容量预算
 
 昇腾 NPU 包含多个可以独立工作的 AI Core。为了发挥多核并行能力，Kernel 需要把完整向量划分为多个逻辑 Block，运行时再将它们调度到空闲的 AI Core 上执行。
 
@@ -50,8 +50,8 @@ $$
 这组参数同时满足三项底层物理限制：
 
 - **负载均衡**：16 个 Block 的计算量完全一致，避免部分 AI Core 提前空闲、部分 Core 长时间耗时。
-- **32B 物理对齐**：每个 Block 负责的数据量为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$。数据按 `32 B` 整数倍连续组织，满足硬件搬运与向量计算的物理对齐要求。
-- **UB 内存预算**：每个 Block 需要在片上 SRAM（UB）中为 `x`、`y`、`z` 申请三段局部缓冲区，总内存占用为：
+- **32 字节对齐**：每个 Block 负责的数据量为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$。数据按 `32 B` 整数倍连续组织，满足硬件搬运与向量计算的对齐要求。
+- **UB 容量预算**：每个 Block 需要在片上 SRAM（UB）中为 `x`、`y`、`z` 申请三段局部缓冲区，总内存占用为：
 
 $$
 3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}
@@ -89,7 +89,7 @@ Global Memory：得到完整 z
 
 Device 端 Kernel 的核心使命，就是精准定位当前 Block 的数据切片，编排 GM 与 UB 之间的内存搬运，并在 UB 内触发向量计算。
 
-#### 三、Device 端 Kernel（NPU 核函数）的具体编写
+#### 三、NPU 端核函数（Kernel）实现
 
 本节采用 Ascend C SIMD C API 实现。它使用 `asc_copy_gm2ub`、`asc_add` 等 C 函数接口，并允许用 `__ubuf__` 关键字分配 UB 局部工作区。
 
@@ -262,7 +262,7 @@ aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize,
             ACL_MEMCPY_HOST_TO_DEVICE);
 ```
 
-##### （二）Launch 语法解构：数据与执行配置解耦
+##### （二）核函数启动语法：执行配置与数据参数
 
 启动 Kernel 时的语法如下：
 
