@@ -4,7 +4,7 @@
 
 #### 一、题目模板与开发者交付内容
 
-打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：**定义在 NPU 上执行的 `add_custom` Kernel**，以及**在 `run_kernel` 中按给定接口启动它**。
+打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：定义在 NPU 上执行的 `add_custom` Kernel，以及在 `run_kernel` 中按给定接口启动它。
 
 <pre class="dataflow"><code><span class="flow-judge">评测框架</span>：准备 x、y、z 的设备内存
         <span class="flow-arrow">|</span>
@@ -17,7 +17,7 @@
         <span class="flow-arrow">v</span>
 <span class="flow-result">评测框架</span>：等待、取回并校验 z</code></pre>
 
-模板规定了 `run_kernel` 的函数签名，开发者不能修改它。写代码时，只需沿着下面两处 `TODO` 完成自己的交付：
+模板规定了 `run_kernel` 的函数签名，开发者不能修改它。写代码时，只需沿着下面两处 `TODO` 补齐逻辑：
 
 ```cpp
 #include <cmath>
@@ -35,13 +35,13 @@ extern "C" void run_kernel(
 }
 ```
 
-后续 3.3 完成 `add_custom` 的 Device 端实现，3.4 再回到 `run_kernel`，利用模板传入的参数完成检查与启动。此时不必急着逐一理解入口的每个参数；它们会在真正需要使用时引入。
+后续先完成 `add_custom` 的 Device 端实现，再回到 `run_kernel`，利用模板传入的参数完成检查与启动。入口处的各个参数会在真正使用时逐一拆解。
 
 #### 二、`add_custom` Kernel 算子实现
 
-##### （一）物理边界约束与多核切分推导
+##### （一）第一步：手算切片参数与 UB 内存预算
 
-编写 `add_custom` 前，必须先同时确定两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
+编写 `add_custom` 前，必须先算清两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
 
 ```cpp
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -49,35 +49,35 @@ constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 ```
 
-这组参数不是任意常量，而是同时满足三项硬件约束：
+这组参数同时满足三项底层硬件限制：
 
-- **多核负载均衡**：`172032` 个元素被 16 个逻辑 Block 均分，每个 Block 处理 `10752` 个元素。
-- **32B 数据粒度**：单段 `float32` 数据长度为 `10752 × 4 B = 43008 B = 1344 × 32 B`，满足连续数据按 `32 B` 整数倍组织的要求。
-- **UB 资源预算**：`xLocal`、`yLocal`、`zLocal` 三段缓冲区共占用：
+- **多核负载均衡**：`172032` 个元素被 16 个逻辑 Block 平分，每个 Block 负责 `10752` 个元素。
+- **32B 物理对齐**：单段 `float32` 数据长度为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$，严格满足连续数据按 `32 B` 整数倍组织的物理要求。
+- **UB 内存预算**：`xLocal`、`yLocal`、`zLocal` 三段片上缓冲区总共占用：
 
 $$
 3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}
 $$
 
-这为单个 AI Core 标称约 `256 KB` 的 UB 留出了资源余量。
+标称约 `256 KB` 的 UB 被用掉约一半，为运行时资源和其他片上需求留出了安全余量。
 
-**为什么不能缩减为 8 个 Block？** 若仍处理 `172032` 个元素却只启动 8 个 Block，每个 Block 需要处理 `21504` 个元素，三段 UB 缓冲区将占用：
+**为什么要启动 16 个 Block？如果改成 8 个会怎样？** 假设只启动 8 个 Block 处理这 `172032` 个元素，每个 Block 分到的数据量就会翻倍，达到 `21504` 个元素。此时三段 UB 空间需要：
 
 $$
-3 \times 21504 \times 4\text{ B} = 258048\text{ B} = 252\text{ KB}
+3 \times 21504 \times 4\text{ B} = 258048\text{ B} \approx 252\text{ KB}
 $$
 
-这不是多个 AI Core 共享 UB 的问题，而是单个 Block 的三段静态 UB 数组已经占到标称容量的约 `98.4%`。标称 `256 KB` 并不等于全部都可供用户数组使用：编译器生成的控制信息、运行时资源及其他片上需求也要占用空间。`252 KB` 会超出这份 Kernel 可用的 UB 资源预算，可能在编译期静态资源检查或运行时分配阶段失败。因此，16 个 Block 是当前固定规格下的安全配置，而不是题目天然规定的唯一值。
+单个 AI Core 的 UB 虽然标称 `256 KB`，但编译器生成的控制信息、运行时框架自身也要占用片上资源。用户可自由支配的空间远不到全部标称容量。分配 `252 KB` 的三段数组会让 UB 占用率达到约 `98.4%`，可能在编译期静态资源检查或运行时分配阶段直接失败。因此，将任务切分为 16 个 Block、把单核 UB 占用控制在 `126 KB`，才是当前固定规格下安全可靠的配置。
 
-##### （二）C API 接口约定与通用指针转换
+##### （二）第二步：将无类型内存转换为 float32 指针
 
-确定网格与 UB 资源后，需要把模板传入的通用 GM 地址转换为可进行元素级寻址的 `float32` 指针。SIMD C API 提供这一过程中使用的搬运、计算与同步接口：
+确定切片参数与 UB 预算后，需要把模板传入的通用 GM 地址转换为可进行元素级寻址的 `float32` 指针。SIMD C API 提供了这一过程中使用的搬运、计算与同步接口：
 
 ```cpp
 #include "c_api/asc_simd.h"
 ```
 
-题目入口的 `GM_ADDR` 是通用字节地址。若直接对它做地址运算，偏移单位是字节；而本题需要按 `float32` 元素定位当前 Block 的起点。因此先用 `reinterpret_cast` 将地址解释为 `__gm__ float*`，再加上元素数 `offset`。这个转换不搬运、不修改数据，只改变编译器理解地址和计算偏移的方式：
+题目入口传入的 `GM_ADDR` 本质上是无类型的底层字节地址，类似 `void*`。如果直接对它做地址加减，偏移单位是 Byte；但本题需要按 `float32` 元素个数定位当前 Block 的起点。因此，先利用 `reinterpret_cast` 将其强转为 `__gm__ float*` 指针，再加上元素偏移量 `offset`：
 
 ```cpp
 const uint32_t offset = block_idx * BLOCK_LENGTH;
@@ -86,49 +86,55 @@ __gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + offset;
 __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
 ```
 
-##### （三）片上数据流驱动的 Kernel 组装
+这一步不产生任何硬件搬运代码，只是改变 C++ 编译器理解地址与计算偏移的方式。
 
-现在将三个阶段组装为完整的 `add_custom`：先定位当前 Block 的 GM 区间，在 UB 中建立局部工作区，再按“GM -> UB -> Vector -> UB -> GM”的数据依赖完成计算。
+##### （三）第三步：组装“搬运-计算-写回”数据流
+
+现在将硬件初始化、内存定位、片上分配与读、算、写三阶段组装为完整的 `add_custom` Kernel：
 
 ```cpp
 __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 {
+    // 1. 初始化 Ascend C 硬件环境。
     asc_init();
 
+    // 2. 根据逻辑 Block 编号，计算当前任务对应的首地址偏移。
     const uint32_t offset = block_idx * BLOCK_LENGTH;
     __gm__ float* xGm = reinterpret_cast<__gm__ float*>(x) + offset;
     __gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + offset;
     __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
 
+    // 3. 在片上 SRAM（UB）中开辟局部工作区。
     __ubuf__ float xLocal[BLOCK_LENGTH];
     __ubuf__ float yLocal[BLOCK_LENGTH];
     __ubuf__ float zLocal[BLOCK_LENGTH];
 
+    // 4. 阶段一：GM -> UB。搬运长度单位是字节。
     asc_copy_gm2ub(xLocal, xGm, BLOCK_LENGTH * sizeof(float));
     asc_copy_gm2ub(yLocal, yGm, BLOCK_LENGTH * sizeof(float));
     asc_sync();
 
+    // 5. 阶段二：Vector 在 UB 内完成加法。长度单位是元素个数。
     asc_add(zLocal, xLocal, yLocal, BLOCK_LENGTH);
     asc_sync();
 
+    // 6. 阶段三：UB -> GM。
     asc_copy_ub2gm(zGm, zLocal, BLOCK_LENGTH * sizeof(float));
     asc_sync();
 }
 ```
 
-这段 Kernel 中，`block_idx` 确定当前片段，三个 `__ubuf__` 数组构成局部工作区，三阶段 API 组织该片段的搬入、向量加法与写回。两个搬运接口的长度单位为字节，因此传入 `BLOCK_LENGTH * sizeof(float)`；`asc_add` 的长度单位为元素个数，因此直接传入 `BLOCK_LENGTH`。
+以 `block_idx = 3` 为例，当前 Block 的偏移是 $3 \times 10752 = 32256$，它执行的切片计算为：
 
-以 `block_idx = 3` 为例，当前 Block 的偏移是 `3 × 10752 = 32256`，因此它计算：
-
-```text
-x[32256:43008] + y[32256:43008] -> z[32256:43008]
-```
+$$
+x[32256:43008] + y[32256:43008] \longrightarrow z[32256:43008]
+$$
 
 #### 三、`run_kernel` 调用接口实现
 
 ##### （一）防御性参数校验
 
-回到 `run_kernel` 时，模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 则记录输入输出的数量、形状和数据类型，`availableCoreNum` 表示当前可用向量核资源。由于本题 Kernel 只适用于固定长度的 `float32` 向量，先检查这些元信息，可以避免不匹配的规格进入固定执行路径：
+回到 Host 侧的 `run_kernel`。模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 记录输入的数量、形状与数据类型，`availableCoreNum` 表示当前可用向量核数。由于本 Kernel 针对固定长度 `float32` 向量定制，先进行参数校验，防止规格不匹配的任务误入该执行路径：
 
 ```cpp
 if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
@@ -144,60 +150,69 @@ if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
 
 ##### （二）Stream 挂载与 Kernel 启动
 
-检查通过后，使用模板提供的 Stream 启动 Kernel：
+校验通过后，使用 `<<<...>>>` 语法启动 Kernel：
 
 ```cpp
 add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 ```
 
-尖括号内是执行配置，圆括号内是本次处理的 GM 地址：
+执行参数配置如下：
 
-| 参数 | 本题取值 | 含义 |
+| 参数 | 本题取值 | 硬件/框架含义 |
 | --- | --- | --- |
-| `NUM_BLOCKS` | `16` | 启动 16 个 Block。 |
-| 动态 UB 参数 | `nullptr` | 不申请动态 UB；本题使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
-| `stream` | 模板传入 | 将 Kernel 加入该运行时流。 |
+| `NUM_BLOCKS` | `16` | 告诉 NPU 调度器启动 16 个逻辑 Block，并分发给 AI Core 执行。 |
+| 动态 UB 参数 | `nullptr` | 不申请动态 UB 空间；本题直接使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
+| `stream` | 模板传入 | 将本次 Launch 任务推入特定的昇腾异步执行队列。 |
 
-#### 四、完整交付代码解析：kernel.asc
+#### 四、完整交付代码：`kernel.asc`
 
 ```cpp
 #include <cstdint>
 #include "kernel_operator.h"
 #include "c_api/asc_simd.h"
 
+// 1. 定义物理切片参数。
 constexpr uint32_t NUM_BLOCKS = 16;
 constexpr uint32_t BLOCK_LENGTH = 10752;
 constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
 
+// 2. Device 侧向量加法 Kernel 实现。
 __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 {
     asc_init();
 
+    // 手算当前 Block 在 GM 上的首地址。
     const uint32_t offset = block_idx * BLOCK_LENGTH;
     __gm__ float* xGm = reinterpret_cast<__gm__ float*>(x) + offset;
     __gm__ float* yGm = reinterpret_cast<__gm__ float*>(y) + offset;
     __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
 
+    // 申请片上 UB 临时工作区。
     __ubuf__ float xLocal[BLOCK_LENGTH];
     __ubuf__ float yLocal[BLOCK_LENGTH];
     __ubuf__ float zLocal[BLOCK_LENGTH];
 
+    // 读数据：GM -> UB，单位为 Bytes。
     asc_copy_gm2ub(xLocal, xGm, BLOCK_LENGTH * sizeof(float));
     asc_copy_gm2ub(yLocal, yGm, BLOCK_LENGTH * sizeof(float));
     asc_sync();
 
+    // 算数据：Vector SIMD 计算，单位为 Count。
     asc_add(zLocal, xLocal, yLocal, BLOCK_LENGTH);
     asc_sync();
 
+    // 写数据：UB -> GM，单位为 Bytes。
     asc_copy_ub2gm(zGm, zLocal, BLOCK_LENGTH * sizeof(float));
     asc_sync();
 }
 
+// 3. Host 侧 Launch 框架入口。
 extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
                            GM_ADDR y, const TensorGroupInfo& info_y,
                            GM_ADDR z, const TensorGroupInfo& info_z,
                            int64_t availableCoreNum, aclrtStream stream)
 {
+    // 参数防御性校验。
     if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
         info_z.numTensors != 1 || info_x.tensors[0].dtype != 0 ||
         info_y.tensors[0].dtype != 0 || info_z.tensors[0].dtype != 0 ||
@@ -208,6 +223,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
         return;
     }
 
+    // 启动 16 个 Block 异步执行 Kernel。
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
