@@ -1,6 +1,8 @@
-### 第二节 编写第一个 Add Kernel
+### 第二节 编写第一个 Add Kernel（核函数）
 
-第一节已经介绍了 Host、GM、UB、MTE 与 Vector Unit 的分工。本节将这套架构落实到一个固定规格的 Add：为完整向量划分 Block，为每个 Block 规划 UB 工作区，再用 Device 端代码组织搬入、计算与写回。
+在异构计算中，一段完整的算子程序分为两部分：运行在 NPU 芯片内部的底层计算代码称为 **Kernel（核函数）**，运行在 CPU 上、负责全局调度的程序称为 **Host 程序**。Host 程序像“指挥官”，负责在设备内存中开辟空间、把数据送进 NPU，并发号施令启动计算；Kernel 则像一线工人，是专门在 NPU 的 AI Core 内部执行的底层 C/C++ 代码。
+
+启动 Kernel 时，NPU 会并行派生出多个逻辑任务（Block）。每个任务运行同一份 Kernel 代码，各自处理数据的一个切片。上一节介绍了 Host、GM、UB、MTE 与 Vector Unit 的分工；本节将这套架构落实到一个固定规格的 Add 算子：手算切片参数分配 Block，为每个 Block 规划 UB 内存预算，最后分别编写 Device 端 Kernel 与 Host 端调度代码，完成“搬入 -> 计算 -> 写回”的数据闭环。
 
 #### 一、Add 算子功能介绍
 
@@ -10,7 +12,7 @@ $$
 z_i = x_i + y_i, \quad i \in [0, 172032)
 $$
 
-本例使用的变量如下。
+本例使用的变量如下：
 
 | 变量 | 说明 |
 | --- | --- |
@@ -19,19 +21,23 @@ $$
 | 输出 `z` | 一维 `float32` 向量，形状为 `(172032,)` |
 | `x`、`y` 取值范围 | `[-1.0, 1.0]` |
 
-输入长度固定为 `172032`，不考虑其他长度、广播或多数据类型情形。这不是任意选择的数字：它可以被后续的 `16` 个 Block 均匀分配，每个 Block 恰好处理 `10752` 个元素；对 `float32` 而言，这段数据的长度为 `10752 × 4 B = 43008 B = 1344 × 32 B`。固定规格让本节可以聚焦于一次清晰的数据切分、搬运与计算闭环；后续再讨论更一般的长度和数据类型。
-
-`float32` 是 32 位单精度浮点数，每个元素占 `4 B`。长度和数据类型在本节预先确定，因此可以先把注意力放在数据如何被划分、搬运和计算上。
+输入长度固定为 `172032`。这不是任意选择的数字：它可以被 `16` 个 Block 均匀整除，每个 Block 恰好处理 `10752` 个元素；对 `float32` 而言，这段数据的长度为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$。固定规格让本节先聚焦数据划分、内存搬运与向量计算的主干闭环；后续章节会进一步拓展到动态长度与多数据类型。
 
 #### 二、Add 算子的执行方案
 
-在编写 Kernel 代码前，需要先确定算子的执行方案。对于本节的 Add，设计过程可以归结为两个问题：**任务如何切分，交给多个 AI Core 并行处理？数据如何在一个 AI Core 内流动并完成计算？** 前者决定空间上的并行分工，后者决定一段数据在时间上的处理闭环。
+编写 Kernel 代码前，需要先明确两个核心问题：多核之间如何拆分任务，也就是空间维度的分工；单核内部数据如何流动并完成计算，也就是时间维度的闭环。
 
-##### （一）空间维度：多核并行与 Block 级数据切分
+##### （一）第一步：手算切片参数与 UB 内存预算
 
-昇腾 NPU 具有多个可以独立工作的 AI Core。为了让整个输入不由单个 Core 顺序完成，Kernel 会把任务划分为多个 Block。Block 是同一份 Kernel 的逻辑执行任务；运行时将它们调度到可用的 AI Core 上执行。多个 Block 可以并行执行，但不能假设某个 Block 永远绑定某一个固定的 AI Core。
+昇腾 NPU 包含多个可以独立工作的 AI Core。为了发挥多核并行能力，Kernel 需要把完整向量划分为多个逻辑 Block，运行时再将它们调度到空闲的 AI Core 上执行。
 
-本例中，一个 `float32` 向量共有 `172032` 个元素，单个向量占用 `172032 × 4 B = 688128 B`，即 `672 KB`。将它均匀划分为 `16` 个 Block 后，每个 Block 负责 `10752` 个元素：
+本例中，单个 `float32` 向量占用的显存为：
+
+$$
+172032 \times 4\text{ B} = 688128\text{ B} = 672\text{ KB}
+$$
+
+将它均匀切分为 `16` 个 Block 后，每个 Block 负责 `10752` 个元素：
 
 ```text
 完整向量：172032 个 float32 元素
@@ -41,24 +47,29 @@ $$
 └── Block 15: 元素 [161280, 172032) -> 43008 B = 1344 × 32 B
 ```
 
-这种切分同时满足两项基本要求：
+这组参数同时满足三项底层物理限制：
 
-- **负载均衡**：16 个 Block 的工作量相同。运行时可以将它们分配给空闲的 AI Core，使各 Core 尽量同步完成，而不是让部分 Core 长时间等待。
-- **数据对齐**：每个 Block 的一段 `float32` 数据占用 `10752 × 4 B = 43008 B = 1344 × 32 B`。数据搬运和向量计算按固定数据块组织，连续且满足 `32 B` 整数倍的长度能避免额外的尾部处理。
-
-还需要确认这段任务能放入一个 AI Core 的 UB。当前 Block 同时需要保存 `x`、`y` 和 `z` 三段 `10752` 元素的 `float32` 数据：
+- **负载均衡**：16 个 Block 的计算量完全一致，避免部分 AI Core 提前空闲、部分 Core 长时间耗时。
+- **32B 物理对齐**：每个 Block 负责的数据量为 $10752 \times 4\text{ B} = 43008\text{ B} = 1344 \times 32\text{ B}$。数据按 `32 B` 整数倍连续组织，满足硬件搬运与向量计算的物理对齐要求。
+- **UB 内存预算**：每个 Block 需要在片上 SRAM（UB）中为 `x`、`y`、`z` 申请三段局部缓冲区，总内存占用为：
 
 $$
 3 \times 10752 \times 4\text{ B} = 129024\text{ B} = 126\text{ KB}
 $$
 
-`126 KB` 低于单个 AI Core 约 `256 KB` 的 UB 名义容量，并为运行时资源保留了空间。每段 `43008 B` 同时是 `32 B` 的整数倍；在 GM 基地址满足对齐时，各 Block 的起始位置也会保持同样的对齐关系。
+物理上单个 AI Core 的 UB 标称容量虽然约为 `256 KB`，但运行时框架和控制信息也会占用部分片上内存。把单核 UB 占用控制在 `126 KB`，约为一半容量，留出了充裕的安全余量。
 
-这里的切分是 **Block 级切分**，解决“多个 AI Core 如何分工”。第五节介绍的 Tile 切分则发生在单个 Block 内部：当一个 Block 负责的数据无法同时放进 UB 时，再将它拆成若干小段循环处理。它解决的是“单个 Core 的片上空间如何使用”。本例每个 Block 的三段 UB 缓冲区共占 `126 KB`，能放入约 `256 KB` 的 UB，因此不需要在本节继续进行 Tile 切分。
+**直觉思考：为什么要切成 16 个 Block？如果只切成 8 个会怎样？** 只启动 8 个 Block 时，每个 Block 处理的数据量会翻倍到 `21504` 个元素；三段 UB 缓冲区的占用随之变为：
 
-##### （二）时间维度：单个 Block 的数据闭环
+$$
+3 \times 21504 \times 4\text{ B} = 258048\text{ B} \approx 252\text{ KB}
+$$
 
-确定了每个 Block 的负责范围后，还要确定这一段数据经过哪些位置，并在何处完成加法。完整输入由 Host 准备，设备侧 Global Memory 保存完整的 `x`、`y` 与 `z`；具体到一个 Block 时，当前片段会进入该 AI Core 的 UB，由向量计算单元完成加法，再沿相反方向写回。
+静态占用高达 `98.4%`，在编译阶段或运行时很容易触发 UB 资源溢出。因此，切分为 16 个 Block 同时兼顾了多核并行与片上内存安全。
+
+##### （二）第二步：确定单核内部的“搬运-计算-写回”数据流
+
+确定 Block 分配后，数据在单个 Core 内部按以下轨迹流动：
 
 ```text
 Host Memory：准备输入 x、y，并在结束后读取 z
@@ -76,22 +87,15 @@ UB：暂存当前 Block 的 z
 Global Memory：得到完整 z
 ```
 
-因此，Device 端 Kernel 的职责并不只是写出 `z[i] = x[i] + y[i]`：它还必须定位当前 Block 的数据范围，组织 GM 与 UB 之间的搬运，并在 UB 中调用向量计算。接下来的代码正是把这套宏观设计落实为可执行的接口调用。
+Device 端 Kernel 的核心使命，就是精准定位当前 Block 的数据切片，编排 GM 与 UB 之间的内存搬运，并在 UB 内触发向量计算。
 
-#### 三、一个 Block 的执行计划
+#### 三、Device 端 Kernel（NPU 核函数）的具体编写
 
-上一部分已经确定了宏观方案：16 个 Block 分工处理完整向量，每个 Block 对自己的片段完成一次数据闭环。落实到 Device 端时，一个 Block 需要完成三件事：
-
-1. **定位数据**：确定自己负责的 GM 数据起始地址。
-2. **准备工作区**：在片上 UB 中划分输入和输出的局部缓冲区。
-3. **编排执行顺序**：按数据依赖安排“搬入 -> 计算 -> 写回”的先后关系。
-
-下面的 Kernel 就是这一执行计划的完整表达。
-
-本节使用 **Ascend C SIMD C API**。它提供 `asc_copy_gm2ub`、`asc_add` 等接口，并允许用 `__ubuf__` 声明 UB 局部缓冲区。后续章节会出现另一种 C++ Tensor API 风格；两种接口对局部内存的表达方式不同，不能混用。
+本节采用 Ascend C SIMD C API 实现。它使用 `asc_copy_gm2ub`、`asc_add` 等 C 函数接口，并允许用 `__ubuf__` 关键字分配 UB 局部工作区。
 
 ```cpp
 #include <cstdint>
+#include "c_api/asc_simd.h"
 
 constexpr uint32_t TOTAL_LENGTH = 172032;
 constexpr uint32_t NUM_BLOCKS = 16;
@@ -100,38 +104,39 @@ __vector__ __global__ void add_custom(__gm__ float* x,
                                       __gm__ float* y,
                                       __gm__ float* z)
 {
+    // 1. 初始化硬件环境。
     asc_init();
 
     constexpr uint32_t block_length = TOTAL_LENGTH / NUM_BLOCKS;
 
-    // 当前 Block 在 Global Memory 中负责的数据起始位置。
+    // 2. 根据逻辑 Block 编号，计算当前任务在 GM 中的首地址偏移。
     __gm__ float* x_gm = x + block_idx * block_length;
     __gm__ float* y_gm = y + block_idx * block_length;
     __gm__ float* z_gm = z + block_idx * block_length;
 
-    // 在片上 UB 中为 x、y、z 分别分配一段连续空间。
+    // 3. 在片上 SRAM（UB）中开辟局部工作区。
     __ubuf__ float x_local[block_length];
     __ubuf__ float y_local[block_length];
     __ubuf__ float z_local[block_length];
 
-    // 将输入数据从 Global Memory 搬运到 UB。
+    // 4. 阶段一：数据搬入，GM -> UB。长度单位为 Bytes。
     asc_copy_gm2ub(x_local, x_gm, block_length * sizeof(float));
     asc_copy_gm2ub(y_local, y_gm, block_length * sizeof(float));
     asc_sync();
 
-    // 调用 SIMD C API，完成 z_local[i] = x_local[i] + y_local[i]。
+    // 5. 阶段二：片上向量计算。长度单位为元素个数。
     asc_add(z_local, x_local, y_local, block_length);
     asc_sync();
 
-    // 将 UB 中的结果写回 Global Memory。
+    // 6. 阶段三：结果写回，UB -> GM。长度单位为 Bytes。
     asc_copy_ub2gm(z_gm, z_local, block_length * sizeof(float));
     asc_sync();
 }
 ```
 
-##### （一）定位当前 Block 的数据范围
+##### （一）定位当前 Block 的数据首地址
 
-所有 Block 执行的是同一份 Kernel 代码，那么它们如何处理不同的数据？答案是运行时为每个 Block 提供不同的逻辑编号 `block_idx`。代码用这个编号计算统一的偏移量，让三个输入输出指针同步移动到当前 Block 的起点：
+所有 Block 执行的都是同一份 Kernel 代码。硬件通过内置系统变量 `block_idx`（取值 `0` 到 `15`）区分不同的逻辑 Block：
 
 ```cpp
 constexpr uint32_t block_length = TOTAL_LENGTH / NUM_BLOCKS;
@@ -141,13 +146,11 @@ __gm__ float* y_gm = y + block_idx * block_length;
 __gm__ float* z_gm = z + block_idx * block_length;
 ```
 
-`__global__` 声明可由 Host 启动的 Device 端 Kernel，`__vector__` 表示该 Kernel 由 AI Core 的向量计算单元执行。这里 `TOTAL_LENGTH = 172032`、`NUM_BLOCKS = 16`，因此 `block_length = 10752`。
+`__global__` 表示该函数是一个可由 Host 启动的 Kernel；`__vector__` 表示该 Kernel 由 AI Core 内的 Vector 计算单元执行。以 `block_idx = 3` 为例，三个指针同时偏移 $3 \times 10752 = 32256$ 个元素；该 Block 准确处理切片 $x[32256:43008]$ 和 $y[32256:43008]$，并将结果写入 $z[32256:43008]$。
 
-`block_idx` 是编译器提供的内置系统变量，不需要声明或作为参数传入。运行时启动 16 个 Block 时，会让它们分别读到 `0` 到 `15` 的逻辑编号。它表示当前 Block 的编号，而不是固定 AI Core 的物理编号。例如，`block_idx = 3` 时，三个指针都会偏移 `3 × 10752` 个元素，因此该 Block 处理 `x[32256:43008]`、`y[32256:43008]`，并将结果写到 `z[32256:43008]`。
+##### （二）分配 UB 局部工作区
 
-##### （二）准备当前 Block 的局部工作区
-
-当前 Block 已经知道自己该读写 GM 的哪一段，但向量计算不能直接把 GM 当作工作区。它需要同时保留两个输入片段和一个输出片段，因此在当前 AI Core 的 UB 中准备三段局部缓冲区：
+Vector 计算单元无法直接对 GM 显存进行数学运算，必须在 UB 片上空间分配三段工作区：
 
 ```cpp
 __ubuf__ float x_local[block_length];
@@ -155,35 +158,22 @@ __ubuf__ float y_local[block_length];
 __ubuf__ float z_local[block_length];
 ```
 
-三段 UB 缓冲区分别保存当前 Block 负责的 `10752` 个 `float` 元素。三个缓冲区使用相同的长度，保证 `x_local[i]`、`y_local[i]` 和 `z_local[i]` 始终对应原向量中的同一个逻辑位置。
+`__ubuf__` 语法看起来像普通的 C++ 局部数组，但它本质上是对硬件 UB 静态资源的映射分配。编译器会在编译期为整个 Kernel 规划好这三块片上内存，而不是在运行时动态申请栈空间。
 
-`__ubuf__` 看起来像 C++ 中的局部数组，但它描述的是 AI Core 的片上 UB 资源。编译器会根据这类声明为 Kernel 规划固定的 UB 空间；它不是每次执行到声明处才发生一次普通栈内存的动态申请。即使后续在循环中处理多个数据片段，通常也是复用已经规划好的局部工作区，而不是反复申请和释放 UB。
+##### （三）组装“搬运-计算-写回”流水线
 
-##### （三）按数据依赖安排搬入、计算与写回
+数据依赖决定了代码的执行顺序：必须先将 `x` 和 `y` 搬入 UB，才能触发加法；必须等加法完全结束，才能将 `z` 写回 GM。在调用 SIMD C API 时，需要特别注意长度参数的单位差异：
 
-局部工作区准备好后，执行顺序由数据依赖决定：必须先搬入 `x`、`y`，才能计算 `z`；必须先得到 `z`，才能将它写回 GM。对应的代码如下：
+| API 类型 | 代表接口 | 长度单位 | 对应硬件引擎 | 原因 |
+| --- | --- | --- | --- | --- |
+| 内存搬运 API | `asc_copy_gm2ub` / `asc_copy_ub2gm` | 字节数（Bytes） | MTE 引擎 | 搬运引擎只关心物理字节数，不关注具体数据类型。 |
+| 向量计算 API | `asc_add` | 元素个数（Count） | Vector 单元 | 计算单元依托 `float*` 类型确定字节大小，只需知道处理多少个元素。 |
 
-```cpp
-asc_copy_gm2ub(x_local, x_gm, block_length * sizeof(float));
-asc_copy_gm2ub(y_local, y_gm, block_length * sizeof(float));
-asc_sync();
+代码中的 `asc_sync()` 用于确认前一阶段的硬件流水线完全执行完毕，防止出现数据未搬完就提前计算，或未计算完就提前写回的竞态冲突。这个同步动作只在当前 Block 内部生效，不会阻塞其他 AI Core 的并行执行。
 
-asc_add(z_local, x_local, y_local, block_length);
-asc_sync();
+#### 四、Host 端任务提交与硬件调用
 
-asc_copy_ub2gm(z_gm, z_local, block_length * sizeof(float));
-asc_sync();
-```
-
-`asc_copy_gm2ub` 和 `asc_copy_ub2gm` 的长度单位是字节，因此参数为 `block_length * sizeof(float)`；`asc_add` 的长度单位是元素个数，因此参数直接是 `block_length`。这不是接口设计的不一致，而是两类硬件任务面对的信息不同：数据搬运由 MTE（Memory Transfer Engine）执行，只关心起始地址与要传输的物理字节数，并不需要理解这些字节是 `float`、`int` 还是其他类型；向量计算则已经从 `float*` 参数和对应指令中确定数据类型，需要知道应处理多少个 `float` 元素。因此，搬运接口使用字节数，计算接口使用元素个数。
-
-每个 `asc_sync()` 都在确认前一阶段产生的数据已经可被下一阶段使用：两次输入搬运完成后，Vector 单元才读取 `x_local`、`y_local`；向量加法完成后，搬运单元才写回 `z_local`。它是**当前 Block、当前 AI Core 内部**各条硬件流水线之间的同步，不会要求其他 Block 停下来等待，也不是 16 个 Block 之间的全局屏障。这样做是为了防止计算读取尚未搬完的数据，或写回尚未计算完成的结果。
-
-这份 Add 代码按阶段顺序推进，优先保证数据依赖正确。后续讨论性能优化时，会在不破坏这些依赖的前提下，让不同数据片段的搬运与计算更紧密地衔接。
-
-#### 四、Host 如何提交一次 Add 任务
-
-Device 端描述的是“一个 Block 拿到自己的数据后如何执行”；Host 端则负责把这次计算组织成可以提交给 NPU 的任务。它需要完成四项工作：准备输入输出存储、把输入传到设备、指定 Kernel 的执行配置、等待并取回结果。`Stream` 是运行时维护的有序任务队列，Host 将内存操作和 Kernel 启动提交到其中，再在需要结果时同步等待。
+Host 端负责初始化内存、准备测试数据，并将计算任务打包提交给 NPU。任务提交通过 Stream（异步任务队列）进行管理。
 
 ```cpp
 #include <acl/acl.h>
@@ -199,6 +189,7 @@ int32_t main(int argc, char const* argv[])
 {
     constexpr size_t totalByteSize = TOTAL_LENGTH * sizeof(float);
 
+    // 1. 在 CPU 侧准备测试数据。
     std::vector<float> x(TOTAL_LENGTH);
     std::vector<float> y(TOTAL_LENGTH);
     for (uint32_t i = 0; i < TOTAL_LENGTH; ++i) {
@@ -206,11 +197,11 @@ int32_t main(int argc, char const* argv[])
         y[i] = static_cast<float>((i * 7) % 2001) / 1000.0f - 1.0f;
     }
 
-    // 创建运行时 Stream。
+    // 2. 创建异步任务队列（Stream）。
     aclrtStream stream = nullptr;
     aclrtCreateStream(&stream);
 
-    // 分配 Host 和 Device 内存，并将输入数据拷贝到 Device。
+    // 3. 申请 Device 显存与 Host 接收内存。
     float* xDevice = nullptr;
     float* yDevice = nullptr;
     float* zDevice = nullptr;
@@ -221,36 +212,36 @@ int32_t main(int argc, char const* argv[])
     aclrtMalloc((void**)&zDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
     aclrtMallocHost((void**)&zHost, totalByteSize);
 
+    // 4. 将输入数据从 CPU 内存拷贝至 Device 显存。
     aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize,
                 ACL_MEMCPY_HOST_TO_DEVICE);
     aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize,
                 ACL_MEMCPY_HOST_TO_DEVICE);
 
-    // 启动 add_custom kernel。
-    // NUM_BLOCKS: 启动的 Block 数量，这里为 16。
-    // 第二个参数: 不使用动态 UB，这里为 nullptr。
-    // stream: 运行时流。
+    // 5. 在 Stream 上异步启动 Kernel。
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(xDevice, yDevice, zDevice);
 
-    // 等待 add_custom kernel 执行完成。
+    // 6. 阻塞等待 NPU 队列中的 Kernel 执行完成。
     aclrtSynchronizeStream(stream);
 
-    // 将结果从 Device Memory 拷贝回 Host Memory。
+    // 7. 将结果从 Device 显存拷贝回 Host 内存。
     aclrtMemcpy(zHost, totalByteSize, zDevice, totalByteSize,
                 ACL_MEMCPY_DEVICE_TO_HOST);
 
+    // 8. 校验计算结果。
     bool passed = true;
     for (uint32_t i = 0; i < TOTAL_LENGTH; ++i) {
         const float expected = x[i] + y[i];
         if (std::fabs(zHost[i] - expected) > 1e-6f) {
-            std::printf("Mismatch at %u: got %.1f, expected %.1f\\n",
+            std::printf("Mismatch at %u: got %.1f, expected %.1f\n",
                         i, zHost[i], expected);
             passed = false;
             break;
         }
     }
-    std::printf(passed ? "Add result is correct.\\n" : "Add result is incorrect.\\n");
+    std::printf(passed ? "Add result is correct.\n" : "Add result is incorrect.\n");
 
+    // 9. 释放资源。
     aclrtFree(xDevice);
     aclrtFree(yDevice);
     aclrtFree(zDevice);
@@ -260,25 +251,9 @@ int32_t main(int argc, char const* argv[])
 }
 ```
 
-这段程序展示的是一次 Add 任务的提交主干。下面不再按照代码出现的先后逐行翻译，而是从 Host 必须完成的三项关键决策来理解它。
+##### （一）显存分配与数据传输
 
-在独立的工程程序中，调用这些运行时接口前还应完成 `aclInit(nullptr)` 和 `aclrtSetDevice(deviceId)`；资源释放后应调用 `aclrtResetDevice(deviceId)` 与 `aclFinalize()`。同时，应检查每个 ACL 接口的返回值。本节保留最小调用片段，以便将注意力集中在 Add 的数据准备、启动与结果回传上；这些运行时生命周期要求在实际工程中不可省略。
-
-##### （一）让输入数据对 NPU 可见
-
-Host 首先为 `x`、`y`、`z` 准备设备侧存储，并将 CPU 侧生成的两个输入复制到设备。`zHost` 则用于在计算结束后接收结果：
-
-```cpp
-aclrtStream stream = nullptr;
-aclrtCreateStream(&stream);
-
-aclrtMalloc((void**)&xDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-aclrtMalloc((void**)&yDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-aclrtMalloc((void**)&zDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-aclrtMallocHost((void**)&zHost, totalByteSize);
-```
-
-输入数据通过 `aclrtMemcpy` 送入 Device Memory：
+Host 端通过 `aclrtMalloc` 在 NPU 侧分配显存，再通过 `aclrtMemcpy` 将 Host 侧数据传输至 NPU：
 
 ```cpp
 aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize,
@@ -287,29 +262,23 @@ aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize,
             ACL_MEMCPY_HOST_TO_DEVICE);
 ```
 
-##### （二）提交 Kernel 的执行配置
+##### （二）Launch 语法解构：数据与执行配置解耦
 
-Kernel 启动语句是 Host 与 Device 的接口边界：
+启动 Kernel 时的语法如下：
 
 ```cpp
 add_custom<<<NUM_BLOCKS, nullptr, stream>>>(xDevice, yDevice, zDevice);
 ```
 
-尖括号 `<<<NUM_BLOCKS, nullptr, stream>>>` 描述的是**如何执行**：启动 16 个 Block，不额外配置动态 UB，并将任务提交到指定 Stream。圆括号 `(xDevice, yDevice, zDevice)` 描述的是**处理什么数据**：Kernel 实际接收的三个 GM 地址。这个区分将“执行配置”和“数据参数”分开，是理解 Kernel 启动语法的关键。
+`<<<...>>>` 用于配置网格与资源：它向调度器指定启动 `16` 个 Block、不申请动态 UB 空间，并将计算任务挂载到指定 Stream 队列。圆括号 `(...)` 则传递数据在 Device 显存中的指针地址给 Kernel 函数。
 
-##### （三）等待结果并验证计算
+##### （三）流同步与结果取回
 
-Host 在需要读取 `z` 前同步 Stream，确保其中排在前面的 Kernel 已经完成；随后将设备侧的 `z` 复制回 `zHost` 并逐元素校验：
+Kernel 在 NPU 上异步执行。Host 在提交任务后必须调用 `aclrtSynchronizeStream(stream)` 阻塞等待，确保 NPU 计算完成后，再将结果 `zDevice` 拉回 Host 内存进行校验。
 
-```cpp
-aclrtSynchronizeStream(stream);
-aclrtMemcpy(zHost, totalByteSize, zDevice, totalByteSize,
-            ACL_MEMCPY_DEVICE_TO_HOST);
-```
+#### 五、工程构建与编译
 
-#### 五、从源文件到可执行任务
-
-这个工程同时包含 Host 侧 C++ 代码与 Device 侧 `.asc` Kernel。构建系统需要识别 Ascend C 源文件，选择目标 NPU 架构，并将两侧代码组织为同一个可执行程序。下面的 CMake 配置完成了这件事：
+在 `CMakeLists.txt` 中引入 ASC 编译语言支持，以同时处理 Host 侧 C++ 代码与 Device 侧 `.asc` 源文件：
 
 ```cmake
 cmake_minimum_required(VERSION 3.16)
@@ -320,14 +289,13 @@ project(add_172032 LANGUAGES ASC CXX)
 
 add_executable(add_172032 add_172032.asc)
 
+# 指定编译面向 Atlas A2 / Ascend 910B 的专用架构代码。
 target_compile_options(add_172032 PRIVATE
     $<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-2201>
 )
 ```
 
-`LANGUAGES ASC CXX` 表示工程同时编译 Ascend C 与 C++；`find_package(ASC REQUIRED)` 引入相应的编译支持。`--npu-arch=dav-2201` 则指定 Device 端 Kernel 面向 Atlas A2 / Ascend 910B 对应的目标架构生成代码。目标架构必须与实际设备匹配，否则生成的 Device 程序无法正确运行。
-
-编译与运行命令：
+命令行编译与运行：
 
 ```bash
 mkdir -p build
@@ -336,7 +304,3 @@ cmake ..
 make -j
 ./add_172032
 ```
-
-#### 六、延伸阅读
-
-- [基于 SIMD 编程的 Add 算子快速入门](https://asc.gitcode.com/guide/%E5%85%A5%E9%97%A8%E6%95%99%E7%A8%8B/%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8/%E5%9F%BA%E4%BA%8ESIMD%E7%BC%96%E7%A8%8B/Add%E7%AE%97%E5%AD%90%E5%BF%AB%E9%80%9F%E5%85%A5%E9%97%A8.html)
