@@ -53,6 +53,22 @@
       border-bottom: 1px solid rgba(255, 255, 255, .14);
     }
 
+    .reading-progress {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 3px;
+      background: rgba(255, 255, 255, .16);
+    }
+    .reading-progress > span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: #73d9d0;
+      transition: width .12s linear;
+    }
+
     .brand { font-weight: 700; font-size: 16px; }
     .brand span { color: #8ee8ef; font-weight: 600; margin-left: 10px; }
 
@@ -201,6 +217,39 @@
       border-radius: 6px;
       box-shadow: inset 3px 0 0 #007acc;
     }
+    .code-language {
+      position: absolute;
+      top: 9px;
+      right: 66px;
+      padding: 2px 7px;
+      color: #91a5bf;
+      border: 1px solid #3b4b61;
+      border-radius: 3px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.35;
+      opacity: .78;
+    }
+    .copy-code {
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      min-width: 46px;
+      padding: 3px 8px;
+      color: #dbe7f5;
+      background: #26364b;
+      border: 1px solid #43546b;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.45;
+      opacity: 0;
+      transition: opacity .15s ease, background .15s ease;
+    }
+    pre:hover .copy-code, pre:focus-within .copy-code { opacity: 1; }
+    .copy-code:hover { background: #0b6e8a; }
+    .copy-code.copied { color: #062f32; background: #70d7ca; border-color: #70d7ca; }
     pre code {
       padding: 0;
       color: #d4d4d4;
@@ -282,12 +331,33 @@
 
     ul, ol { padding-left: 25px; }
     blockquote {
-     margin: 20px 0;
-     padding: 10px 18px;
-     color: #38516b;
-     background: #edf7f8;
-     border-left: 4px solid var(--cyan);
-   }
+      position: relative;
+      margin: 22px 0;
+      padding: 16px 18px 16px 20px;
+      color: #38516b;
+      background: #edf7f8;
+      border: 1px solid #b8dfe0;
+      border-left: 5px solid var(--cyan);
+      border-radius: 0 5px 5px 0;
+      box-shadow: 0 5px 14px rgba(19, 82, 105, .06);
+    }
+    blockquote::before {
+      display: block;
+      margin-bottom: 5px;
+      color: #08736f;
+      content: "知识提示";
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+    blockquote p { margin: 0; }
+    blockquote.knowledge-warning {
+      color: #694716;
+      background: #fff8e9;
+      border-color: #efd095;
+      border-left-color: #d78b24;
+    }
+    blockquote.knowledge-warning::before { color: #a85c09; content: "硬件约束"; }
 
     article img {
       display: block;
@@ -326,12 +396,14 @@
       h5 { font-size: 17px; }
       .api-compare { grid-template-columns: 1fr; }
       pre { margin-left: -4px; margin-right: -4px; padding: 16px; }
+      .copy-code { opacity: 1; }
     }
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">Ascend C <span>动手学昇腾算子开发</span></div>
+    <div class="reading-progress" aria-hidden="true"><span id="reading-progress-bar"></span></div>
   </header>
   <div class="shell">
     <aside aria-label="文档目录">
@@ -359,6 +431,7 @@
     ];
     const content = document.getElementById("content");
     const toc = document.getElementById("toc");
+    const readingProgressBar = document.getElementById("reading-progress-bar");
 
     marked.setOptions({ gfm: true, breaks: false });
 
@@ -421,6 +494,69 @@
       });
     }
 
+    function enhanceKnowledgeCards() {
+      content.querySelectorAll("blockquote").forEach((card) => {
+        const title = card.querySelector("strong")?.textContent.trim() || "";
+        if (title.includes("约束") || title.includes("注意")) {
+          card.classList.add("knowledge-warning");
+        }
+      });
+    }
+
+    function languageLabel(language) {
+      const labels = { cpp: "C++", c: "C", cmake: "CMake", bash: "Bash", text: "流程图" };
+      return labels[language] || (language ? language.toUpperCase() : "Code");
+    }
+
+    async function copyCode(text, button) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+      button.textContent = "已复制";
+      button.classList.add("copied");
+      window.setTimeout(() => {
+        button.textContent = "复制";
+        button.classList.remove("copied");
+      }, 1300);
+    }
+
+    function enhanceCodeBlocks() {
+      content.querySelectorAll("pre code").forEach((block) => {
+        const language = [...block.classList]
+          .find((name) => name.startsWith("language-"))
+          ?.replace("language-", "");
+        const pre = block.parentElement;
+        const label = document.createElement("span");
+        label.className = "code-language";
+        label.textContent = languageLabel(language);
+        pre.appendChild(label);
+
+        const button = document.createElement("button");
+        button.className = "copy-code";
+        button.type = "button";
+        button.textContent = "复制";
+        button.title = "复制代码";
+        button.setAttribute("aria-label", "复制代码");
+        button.addEventListener("click", () => copyCode(block.textContent, button));
+        pre.appendChild(button);
+      });
+    }
+
+    function updateReadingProgress() {
+      const range = document.documentElement.scrollHeight - window.innerHeight;
+      const percentage = range > 0 ? Math.min(100, Math.max(0, window.scrollY / range * 100)) : 0;
+      readingProgressBar.style.width = `${percentage}%`;
+    }
+
    Promise.all(sourceFiles.map((sourceFile) => fetch(sourceFile).then((response) => {
       if (!response.ok) throw new Error(`无法读取讲义（HTTP ${response.status}）`);
       return response.text();
@@ -438,6 +574,8 @@
           }
           if (language === "text") colorDataFlow(block);
         });
+        enhanceKnowledgeCards();
+        enhanceCodeBlocks();
         renderMathInElement(content, {
           delimiters: [
             { left: "$$", right: "$$", display: true },
@@ -448,6 +586,9 @@
           throwOnError: false
         });
         buildToc();
+        updateReadingProgress();
+        window.addEventListener("scroll", updateReadingProgress, { passive: true });
+        window.addEventListener("resize", updateReadingProgress);
       })
       .catch((error) => {
         content.innerHTML = `<p class="error">${error.message}</p>`;
