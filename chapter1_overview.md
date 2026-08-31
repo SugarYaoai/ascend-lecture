@@ -27,28 +27,29 @@
 
 #### 二、昇腾 NPU 的存储与计算架构
 
-NPU 的并行计算并不发生在一块统一的内存中。CPU 侧负责准备数据和提交任务；NPU 设备侧保存完整输入输出；每个 AI Core 还拥有靠近计算单元、容量有限但访问很快的片上 Local Memory。算子程序必须明确数据在哪一层、何时移动到计算单元附近。
+NPU 的并行计算并不发生在一块统一的内存中。CPU 侧负责准备数据和提交任务；NPU 设备侧的 Global Memory（GM）保存完整输入输出；每个 AI Core 再拥有靠近计算单元、容量有限但访问很快的片上工作区。理解 AI Core 与 Block 的区别，是理解后续 Kernel 如何并行执行的前提。
 
 ![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
 
 *图 1-2：Host 与 NPU 之间传递输入输出；NPU 的 GM 保存完整数据，各 AI Core 读取自己负责的片段并在本地工作区完成计算。*
 
-##### （一）不同存储层各自负责什么
+##### （一）AI Core：物理计算单元
 
-- **Host Memory（HM）**：CPU 一侧的内存，用于初始化输入、提交任务和读取结果。NPU Kernel 不能直接把它作为计算输入。
-- **Global Memory（GM）**：NPU 设备侧的共享大容量内存。完整张量通常存放在这里，多个 AI Core 都可以访问它。
-- **Local Memory（本书首先使用 UB）**：单个 AI Core 内部的片上工作区。它容量远小于 GM，却紧挨计算单元，适合暂存当前正在处理的数据片段。其他 AI Core 不会直接共享这块本地空间。
+**AI Core** 是昇腾 NPU 内部独立工作的物理计算单元。可以把它理解为 NPU 中专门处理大批量张量数据的计算核：多个 AI Core 能够同时处理不同的数据片段，而单个 AI Core 则负责完成自己片段的搬运与计算。
 
-这三层空间的容量、访问延迟和可见范围不同。完整数据通常留在 GM；进入当前计算的局部片段才会被搬到 UB。后续的 Kernel 代码会显式表达这条数据路径。
+- **Vector 单元**：负责向量运算的硬件执行引擎，支持 SIMD（单指令多数据）范式；一条指令可处理一批连续元素。
+- **Unified Buffer（UB）**：AI Core 内部的片上高速 SRAM。它读写延迟低、容量有限，通常只有几百 KB，用于保存当前计算的输入与输出工作集。
+- **MTE（Memory Transfer Engine）**：独立的内存搬运引擎，负责在片外大容量 GM 与片上 UB 之间进行 DMA 数据传输。
 
-##### （二）搬运与计算由不同硬件单元负责
+完整张量通常保存在 GM；当前 AI Core 真正需要计算的一小段数据才会通过 MTE 进入 UB。Vector 单元在 UB 中产生结果后，MTE 再将结果写回 GM。Host Memory（HM）位于 CPU 一侧，负责准备输入和取得结果，NPU Kernel 不会直接把它作为计算输入。
 
-AI Core 中，与本书 Add 直接相关的硬件单元有两类：
+##### （二）Block：空间维度的多核任务抽象
 
-- **MTE（Memory Transfer Engine）**：负责 GM 与 UB 之间的数据搬运。它处理连续地址和传输长度，将数据送到需要它的存储位置。
-- **Vector Unit**：负责在 UB 中执行 SIMD 向量运算。它读取局部输入，批量计算，再将局部结果写回 UB。
+**Block** 是昇腾 Kernel 在多核并行维度上的逻辑任务单位。Kernel 启动时会指定本次计算包含多少个 Block；运行时调度器再将这些逻辑 Block 分发到可用的物理 AI Core 上执行。
 
-因此，一个设备侧计算的基本闭环是：MTE 将当前数据片段从 GM 搬入 UB，Vector Unit 在 UB 中计算，MTE 再将结果写回 GM。MTE 和 Vector 是独立的硬件单元，这既带来异步重叠的可能，也要求程序在数据尚未准备好时正确处理依赖关系。
+开发者会把一个大张量划分为多个互不重叠的数据段，每个 Block 只处理其中一段。Block 内通过 `block_idx` 计算当前数据段的偏移量，从而让多个 Block 在同一份 Kernel 代码下处理不同位置的数据，形成无冲突的空间并行。
+
+需要区分逻辑与物理：`block_idx` 是当前**逻辑 Block 的编号**，不是物理 AI Core 编号。运行时会根据空闲情况调度 Block；一个 AI Core 可以先后执行多个 Block，某个 Block 也不保证永久绑定到固定 Core。后续 Add 代码将用 `block_idx` 计算数据偏移，亲自实现这份分工。
 
 #### 三、昇腾 NPU 算子的高性能来源
 
