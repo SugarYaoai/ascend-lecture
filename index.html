@@ -632,7 +632,7 @@
       nodes.forEach((node) => {
         const fragment = document.createDocumentFragment();
         let cursor = 0;
-        node.nodeValue.replace(pattern, (term, offset) => {
+        node.nodeValue.replace(pattern, (term, _capture, offset) => {
           fragment.append(document.createTextNode(node.nodeValue.slice(cursor, offset)));
           const span = document.createElement("span");
           span.className = "glossary-term";
