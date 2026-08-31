@@ -29,6 +29,10 @@
 
 昇腾 NPU 并不是一个单体 CPU，而是一个高度集成的多核并行计算设备。理解 NPU 如何将一个高层算子任务拆解到物理硬件上，是编写高性能 Kernel 的核心前提。
 
+![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
+
+*图 1-2：Host 与 NPU 之间传递输入输出；NPU 的 GM 保存完整数据，各 AI Core 读取自己负责的片段并在本地工作区完成计算。*
+
 ##### 1. AI Core：物理计算核心与底层硬件构成
 
 AI Core 是昇腾 NPU 内部最核心的独立物理计算单元。每个 AI Core 都集成了独立的算力引擎、内存搬运单元与片上高速存储：
