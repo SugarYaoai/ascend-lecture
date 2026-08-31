@@ -112,7 +112,7 @@
     #toc a.level-4 { padding-left: 36px; font-size: 13px; font-weight: 600; }
     #toc a.level-5 { padding-left: 48px; font-size: 12px; }
     #toc a.chapter-heading {
-      margin-top: 16px;
+      margin-top: 22px;
       padding: 10px;
       color: #0d315e;
       background: #e8f1fb;
@@ -120,7 +120,7 @@
       font-weight: 700;
     }
     #toc a.part-heading {
-      margin-top: 12px;
+      margin-top: 16px;
       padding: 9px 10px;
       color: #173a63;
       background: #dfeaf4;
@@ -131,6 +131,10 @@
       color: var(--blue);
       border-left-color: var(--blue);
       background: #fff;
+    }
+    #toc a.active {
+      font-weight: 700;
+      box-shadow: 0 2px 7px rgba(20, 107, 183, .12);
     }
 
     main {
@@ -143,6 +147,52 @@
 
     article { max-width: 900px; margin: 0 auto; }
     article > h1:first-child { margin-top: 0; }
+    .chapter-intro {
+      position: relative;
+      margin: 2px 0 44px;
+      padding: 26px 28px 25px;
+      overflow: hidden;
+      color: #153b66;
+      background: #e7f1fa;
+      border: 1px solid #b9d5e9;
+      border-left: 6px solid #146bb7;
+      border-radius: 6px;
+    }
+    .chapter-intro::after {
+      position: absolute;
+      top: -46px;
+      right: -25px;
+      width: 180px;
+      height: 180px;
+      border: 1px solid #9acbe5;
+      border-radius: 50%;
+      content: "";
+    }
+    .chapter-intro-label {
+      display: block;
+      margin-bottom: 7px;
+      color: #087d8a;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .09em;
+    }
+    .chapter-intro h2 {
+      position: relative;
+      z-index: 1;
+      margin: 0;
+      padding: 0;
+      color: #102f50;
+      border: 0;
+      font-size: 27px;
+    }
+    .chapter-intro p {
+      position: relative;
+      z-index: 1;
+      max-width: 660px;
+      margin: 10px 0 0;
+      color: #40617e;
+      font-size: 15px;
+    }
 
     h1, h2, h3, h4, h5 {
       color: var(--ink);
@@ -197,6 +247,37 @@
     p { margin: 14px 0; }
     a { color: var(--blue); }
     strong { color: #102f50; }
+    .glossary-term {
+      position: relative;
+      color: #0c5c8d;
+      border-bottom: 1px dashed #78a9c8;
+      cursor: help;
+    }
+    .glossary-term::after {
+      position: absolute;
+      z-index: 8;
+      bottom: calc(100% + 7px);
+      left: 50%;
+      width: min(260px, 68vw);
+      padding: 8px 10px;
+      color: #e7f0f7;
+      background: #173a63;
+      border: 1px solid #31567f;
+      border-radius: 4px;
+      box-shadow: 0 8px 20px rgba(17, 42, 70, .22);
+      content: attr(data-tooltip);
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.55;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 4px);
+      transition: opacity .14s ease, transform .14s ease;
+    }
+    .glossary-term:hover::after, .glossary-term:focus-visible::after {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
 
     code {
       padding: .12em .35em;
@@ -367,11 +448,39 @@
       border: 1px solid var(--line);
       border-radius: 4px;
       box-shadow: 0 4px 18px rgba(23, 58, 99, .12);
+      cursor: zoom-in;
+      transition: transform .18s ease, box-shadow .18s ease;
     }
+    article img:hover { transform: translateY(-2px); box-shadow: 0 9px 24px rgba(23, 58, 99, .17); }
     article img + em {
       display: block;
       margin: 0 0 24px;
       color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    .image-lightbox {
+      position: fixed;
+      z-index: 20;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 28px;
+      background: rgba(8, 20, 35, .82);
+    }
+    .image-lightbox.open { display: grid; }
+    .image-lightbox img {
+      display: block;
+      max-width: min(1200px, 94vw);
+      max-height: 82vh;
+      border: 1px solid rgba(255, 255, 255, .38);
+      border-radius: 4px;
+      box-shadow: 0 16px 50px rgba(0, 0, 0, .4);
+    }
+    .image-lightbox p {
+      max-width: min(1200px, 94vw);
+      margin: 12px 0 0;
+      color: #dce9f3;
       font-size: 13px;
       text-align: center;
     }
@@ -414,6 +523,12 @@
       <article id="content"><p class="loading">正在加载讲义...</p></article>
     </main>
   </div>
+  <div class="image-lightbox" id="image-lightbox" role="dialog" aria-modal="true" aria-label="放大图片">
+    <div>
+      <img id="lightbox-image" alt="">
+      <p id="lightbox-caption"></p>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/lib/marked.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
@@ -432,6 +547,9 @@
     const content = document.getElementById("content");
     const toc = document.getElementById("toc");
     const readingProgressBar = document.getElementById("reading-progress-bar");
+    const imageLightbox = document.getElementById("image-lightbox");
+    const lightboxImage = document.getElementById("lightbox-image");
+    const lightboxCaption = document.getElementById("lightbox-caption");
 
     marked.setOptions({ gfm: true, breaks: false });
 
@@ -459,6 +577,99 @@
         toc.querySelectorAll("a").forEach((link) => link.classList.toggle("active", link.hash === `#${current}`));
       }, { rootMargin: "-82px 0px -70% 0px" });
       headings.forEach((heading) => observer.observe(heading));
+    }
+
+    function enhanceChapterHeaders() {
+      const chapterSummaries = {
+        "第一章 从 Add 开始理解昇腾算子开发": "从硬件架构、数据流动到双缓冲优化，建立编写昇腾算子的完整基础。",
+        "附录 术语表": "按执行、内存、接口与性能优化分类，便于随时回查本书术语。"
+      };
+      content.querySelectorAll("h2").forEach((heading) => {
+        const wrapper = document.createElement("section");
+        wrapper.className = "chapter-intro";
+        const label = document.createElement("span");
+        label.className = "chapter-intro-label";
+        label.textContent = heading.textContent.startsWith("附录") ? "REFERENCE" : "CHAPTER";
+        const summary = document.createElement("p");
+        summary.textContent = chapterSummaries[heading.textContent] || "围绕算子实现建立清晰的硬件与代码视角。";
+        heading.parentNode.insertBefore(wrapper, heading);
+        wrapper.append(label, heading, summary);
+      });
+    }
+
+    function enhanceGlossaryTerms() {
+      const glossary = {
+        "AI Core": "NPU 内实际执行核函数的物理计算核心。",
+        "Global Memory": "NPU 设备侧的大容量共享内存，简称 GM。",
+        "Unified Buffer": "AI Core 内的片上高速存储，简称 UB。",
+        "Host Memory": "CPU 一侧的系统内存，简称 HM。",
+        "GlobalTensor": "描述 GM 中连续数据范围的张量视图。",
+        "LocalTensor": "描述 UB 中局部数据范围的张量视图。",
+        "LocalMemAllocator": "从当前 AI Core 的 UB 中分配局部张量的对象。",
+        "PipeBarrier": "表达当前 AI Core 内不同阶段的数据依赖。",
+        "block_idx": "当前 Block 的逻辑编号，不等同于固定的物理 AI Core 编号。",
+        "Kernel": "运行在 NPU 设备端、执行实际计算的核函数。",
+        "Block": "同一份 Kernel 的一个逻辑执行任务。",
+        "Tile": "一个 Block 内可以放入 UB 的一小段连续数据。",
+        "TPipe": "在 UB 中划分并初始化缓冲区的资源管理对象。",
+        "TQue": "在流水线阶段之间传递 LocalTensor 的队列。",
+        "MTE": "负责 GM 与 UB 之间数据搬运的内存传输引擎。",
+        "GM": "Global Memory 的缩写，NPU 侧共享的大容量内存。",
+        "UB": "Unified Buffer 的缩写，AI Core 内的片上高速存储。"
+      };
+      const terms = Object.keys(glossary).sort((a, b) => b.length - a.length);
+      const pattern = new RegExp(`(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const parent = node.parentElement;
+          if (!node.nodeValue.trim() || parent.closest("pre, code, a, script, style, .glossary-term")) return NodeFilter.FILTER_REJECT;
+          pattern.lastIndex = 0;
+          return pattern.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+      });
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const fragment = document.createDocumentFragment();
+        let cursor = 0;
+        node.nodeValue.replace(pattern, (term, offset) => {
+          fragment.append(document.createTextNode(node.nodeValue.slice(cursor, offset)));
+          const span = document.createElement("span");
+          span.className = "glossary-term";
+          span.tabIndex = 0;
+          span.textContent = term;
+          span.dataset.tooltip = glossary[term];
+          fragment.append(span);
+          cursor = offset + term.length;
+          return term;
+        });
+        fragment.append(document.createTextNode(node.nodeValue.slice(cursor)));
+        node.replaceWith(fragment);
+      });
+    }
+
+    function enhanceImages() {
+      content.querySelectorAll("img").forEach((image) => {
+        image.tabIndex = 0;
+        image.setAttribute("role", "button");
+        image.setAttribute("aria-label", "点击放大图片");
+        const open = () => {
+          lightboxImage.src = image.currentSrc || image.src;
+          lightboxImage.alt = image.alt;
+          lightboxCaption.textContent = image.nextElementSibling?.tagName === "EM" ? image.nextElementSibling.textContent : image.alt;
+          imageLightbox.classList.add("open");
+        };
+        image.addEventListener("click", open);
+        image.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+        });
+      });
+      imageLightbox.addEventListener("click", (event) => {
+        if (event.target === imageLightbox) imageLightbox.classList.remove("open");
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") imageLightbox.classList.remove("open");
+      });
     }
 
    function colorDataFlow(block) {
@@ -585,6 +796,9 @@
           ],
           throwOnError: false
         });
+        enhanceChapterHeaders();
+        enhanceGlossaryTerms();
+        enhanceImages();
         buildToc();
         updateReadingProgress();
         window.addEventListener("scroll", updateReadingProgress, { passive: true });
