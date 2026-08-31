@@ -25,15 +25,33 @@
 
 让 CPU 管控制，让 NPU 跑算力，才能最大化整个系统的吞吐性能。
 
-#### 二、昇腾 NPU 的架构与并行抽象
+#### 二、昇腾 NPU 的存储层级与并行抽象
 
-昇腾 NPU 并不是一个单体 CPU，而是一个高度集成的多核并行计算设备。理解 NPU 如何将一个高层算子任务拆解到物理硬件上，是编写高性能 Kernel 的核心前提。
+昇腾 NPU 并不是一个独立的单体 CPU，而是一个高度集成的多核并行计算设备。理解数据如何在不同的存储介质间流动，以及 NPU 如何将任务拆解到物理硬件上，是编写高性能 Kernel 的核心前提。
 
 ![Host、GM、AI Core 与 UB 的关系](assets/architecture/host-gm-ub-ai-core.png)
 
 *图 1-2：Host 与 NPU 之间传递输入输出；NPU 的 GM 保存完整数据，各 AI Core 读取自己负责的片段并在本地工作区完成计算。*
 
-##### 1. AI Core：物理计算核心与底层硬件构成
+##### 1. 存储层级划分：Host Memory 与 Global Memory
+
+在昇腾异构架构中，内存分为明显的三个层级：
+
+- **Host Memory（HM，主机内存）**：位于 CPU 侧的系统内存。负责在程序启动时存放原始数据、运行操作系统及 Host 端逻辑。NPU 硬件无法直接读取 HM 中的数据进行计算。
+- **Global Memory（GM，全局显存）**：位于 NPU 侧的大容量显存（通常为 HBM 或 LPDDR）。它由所有 AI Core 共享，容量可达数十 GB，用于在 Device 侧完整保存算子的输入与输出张量。
+- **Unified Buffer（UB，片上高速缓存）**：位于 AI Core 内部的片上 SRAM，容量通常仅几百 KB。它是 Vector 算力单元唯一能够直接读写的数据工作区。
+
+数据的高效流转链路为：
+
+$$
+\text{HM (Host)} \xrightarrow{\text{PCIe/DMA}} \text{GM (NPU 显存)}
+\xrightarrow{\text{MTE2}} \text{UB (片上)}
+\xrightarrow{\text{Vector 计算}} \text{UB}
+\xrightarrow{\text{MTE3}} \text{GM}
+\xrightarrow{\text{PCIe/DMA}} \text{HM}
+$$
+
+##### 2. AI Core：物理计算核心与底层硬件构成
 
 AI Core 是昇腾 NPU 内部最核心的独立物理计算单元。每个 AI Core 都集成了独立的算力引擎、内存搬运单元与片上高速存储：
 
@@ -44,13 +62,13 @@ AI Core 是昇腾 NPU 内部最核心的独立物理计算单元。每个 AI Cor
 
 在硬件执行管线中，算子所需的完整张量通常保存在片外 GM 中；计算时由 MTE 引擎将数据搬入 UB，Vector/Cube 单元在 UB 中完成计算，最后由 MTE 将结果写回 GM。
 
-##### 2. Block：空间维度的多核任务切分
+##### 3. Block：空间维度的多核任务切分
 
 Block 是昇腾算子在空间多核并行维度上的逻辑任务划分单位。
 
 当 CPU 启动一个 Kernel 时，会指定本次任务包含多少个 Block。NPU 内部的硬件调度器（Task Scheduler）会自动把这些逻辑 Block 分发给多个物理 AI Core 去并发执行。
 
-在算子开发中，巨大的张量数据会被划分为多个互不重叠的数据段。每个 Block 内部通过硬件提供的 `block_idx`（逻辑 Block 编号）计算出属于当前任务的数据偏移量，实现“同一份 Kernel 代码，多个 Block 并发处理不同数据区域”的空间多核并行。
+在算子开发中，保存在 GM 中的大张量会被划分为多个互不重叠的数据段。每个 Block 内部通过硬件提供的 `block_idx`（逻辑 Block 编号）计算出属于当前任务的数据偏移量，实现“同一份 Kernel 代码，多个 Block 并发处理不同 GM 数据区域”的空间多核并行。
 
 需要明确的是：`block_idx` 表示的是逻辑任务编号而非固定的物理 AI Core ID。调度器会根据 AI Core 的空闲状态动态分发 Block，从而确保物理算力被充分压榨。
 
