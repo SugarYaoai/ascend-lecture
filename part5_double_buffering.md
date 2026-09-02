@@ -106,28 +106,47 @@ write(global_y, y);   // 3. 发射到 PIPE_MTE3：将 UB 中的 y 写回主存�
 
 在接下来的双缓冲设计中，我们将通过为相邻 Tile 开辟独立的 UB 工作区，彻底解除跨 Tile 搬运与计算之间的数据竞争，让硬件的重叠并发能力真正落到实处。
 
-#### 四、双缓冲如何解除资源冲突
+#### 四、双缓冲（Double Buffering）机制：片上内存的乒乓重叠
 
-第五节的单缓冲代码只有一套 UB 工作区：`xLocal`、`yLocal`、`zLocal`。当 Vector 单元正在读取其中的 Tile `i` 时，MTE2 不能把 Tile `i + 1` 搬到同一位置；否则新数据会覆盖仍在参与计算的旧数据。于是，下一次搬入只能等待当前计算结束。
+前面已经拆解了昇腾 AI 加速卡的硬件结构与异步指令流。硬件上独立的 MTE2、Vector 与 MTE3 提供了并发重叠的客观条件；而真正解决数据竞争、在软件层面建立缓冲区隔离的核心手段，就是双缓冲（Double Buffering）技术。
 
-双缓冲的做法不是把一个 Tile 算两遍，而是为每种局部数据准备两块可轮换的 UB Buffer。这样可以让两个相邻 Tile 同时处于不同阶段：
+##### （一）Ascend C 编程模型中的双缓冲抽象
 
-```text
-Buffer 0: Tile i     正在由 Vector 计算
-Buffer 1: Tile i + 1 正在由 MTE2 搬入
+在 Ascend C 的 C++ API 中，Unified Buffer（UB）的管理并不是由开发者手动计算指针偏移量，而是通过逻辑队列 `TQue` 与管道内存管理对象 `TPipe` 共同完成。Ascend C 将双缓冲抽象为带深度（Buffer Depth）的内存队列：
+
+```cpp
+// 输入队列：QuePosition::VECIN，缓冲区深度为 2
+TQue<QuePosition::VECIN, 2> inQueue;
+
+// 输出队列：QuePosition::VECOUT，缓冲区深度为 2
+TQue<QuePosition::VECOUT, 2> outQueue;
 ```
 
-当 Tile `i` 的结果进入写回阶段时，Buffer 0 被归还；之后它就可以装入更靠后的 Tile。两组 Buffer 轮流承担这个角色，解除“下一 Tile 必须等上一 Tile 全部结束”的资源冲突。
+当模板参数中的深度设为 `2` 时，`TQue` 会在 UB 中准备两块大小相同、物理地址彼此隔离的存储槽位。当前 Tile 使用其中一块时，下一 Tile 可以使用另一块完成搬入，从而避免覆盖正在被 Vector 单元读取的数据。
 
-#### 五、先确认双缓冲装得下 UB
+![TQue 双缓冲队列拓扑](assets/double-buffer/tque-double-buffer-topology.png)
 
-双缓冲先是一项资源决策，随后才是代码结构。Add Medium 的一个 Tile 长度为 `8192`，一段 `float32` Tile 占用：
+*图 6-3：`inQueue` 与 `outQueue` 中各包含两块独立的片上工作区。*
 
-$$
-8192 \times 4\text{ B} = 32768\text{ B} = 32\text{ KB}
-$$
+##### （二）用 `TPipe::InitBuffer` 分配双缓冲空间
 
-Add 同时需要 `x`、`y`、`z` 三类局部数据。单缓冲时每类只有一块，工作区为 `96 KB`；双缓冲时每类有两块，所需空间变为：
+声明队列后，需要在算子初始化阶段调用 `TPipe::InitBuffer`，在 UB 中完成实际的空间划分：
+
+```cpp
+// Buffer Depth = 2，分别为输入队列与输出队列分配两块缓冲区
+pipe.InitBuffer(inQueue, 2, this->tileLength * sizeof(float));
+pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(float));
+```
+
+`InitBuffer` 的三个参数分别表示：
+
+- **队列对象**：需要分配空间的 `TQue`，例如 `inQueue` 或 `outQueue`。
+- **缓冲区数量**：设为 `1` 时是单缓冲；设为 `2` 时开启双缓冲，UB 中会分配两块独立的物理空间。
+- **单块缓冲区大小**：每块缓冲区的字节长度。本例中是一段 Tile 的数据量，即 `tileLength * sizeof(float)`。
+
+开启双缓冲后，队列的实际 UB 占用为 `2 * len`。因此 Tile 长度不能只按单缓冲计算，还必须将两套交替工作的缓冲区一并纳入容量预算。
+
+对于 Add Medium，`TILE_LENGTH = 8192`。一个 `float32` Tile 占用 `8192 * 4 B = 32 KB`；输入 `x`、输入 `y` 与输出 `z` 都需要两套工作区，因此总占用为：
 
 $$
 3 \times 2 \times 8192 \times 4\text{ B}
@@ -135,205 +154,4 @@ $$
 = 192\text{ KB}
 $$
 
-`192 KB` 小于单个 AI Core 约 `256 KB` 的 UB 名义容量，因此该组参数为两套 Tile 工作区留下了空间。但 UB 的实际可用预算还会受到运行时资源、其他临时数据和对齐要求影响；每次增加 Buffer 深度或 Tile 长度，都应重新进行容量检查并以实际编译、运行结果确认。
-
-本节的双缓冲参数如下：
-
-```cpp
-constexpr uint32_t NUM_BLOCKS = 16;
-constexpr uint32_t BLOCK_LENGTH = 65536;
-constexpr uint32_t TILE_LENGTH = 8192;
-constexpr uint32_t TILE_NUM = 8;
-constexpr uint32_t BUFFER_NUM = 2;
-```
-
-#### 六、用 TPipe 与 TQue 管理缓冲区的使用状态
-
-有两套 Buffer 后，真正困难的不是申请 `6` 个数组，而是判断每一块 UB 什么时候可以写入、什么时候正在计算、什么时候可以复用。手工维护 Buffer 0、Buffer 1 的下标和同步状态，Tile 数增加后很容易发生覆盖。
-
-`TPipe` 和 `TQue` 将这份状态直接写进程序结构中：`TPipe` 在 UB 中为队列划出 Buffer；`TQue` 记录某块 Buffer 当前是否空闲、是否已准备给下一阶段使用。对 Add，需要三条数据通道：
-
-| 队列 | 保存的 Tile | 生产阶段 | 消费阶段 |
-| --- | --- | --- | --- |
-| `inQueueX` | 输入 `x` | CopyIn | Compute |
-| `inQueueY` | 输入 `y` | CopyIn | Compute |
-| `outQueueZ` | 输出 `z` | Compute | CopyOut |
-
-```cpp
-AscendC::TPipe pipe;
-AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueX;
-AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueY;
-AscendC::TQue<AscendC::QuePosition::VECOUT, BUFFER_NUM> outQueueZ;
-
-pipe.InitBuffer(inQueueX, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-pipe.InitBuffer(inQueueY, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-```
-
-一块 Tile Buffer 在队列中的流转遵循固定的所有权关系：
-
-```text
-CopyIn : AllocTensor -> DataCopy -> EnQue
-Compute: DeQue -> Add -> EnQue -> FreeTensor(输入 Buffer)
-CopyOut: DeQue -> DataCopy -> FreeTensor(输出 Buffer)
-```
-
-`AllocTensor` 只能获得空闲 Buffer，`EnQue` 将准备完成的 Buffer 交给下一阶段，`DeQue` 只会取得已经准备好的 Buffer，`FreeTensor` 才会让该 Buffer 回到可复用状态。队列因此同时表达了数据依赖和 UB 的复用边界。
-
-#### 七、稳定运行阶段（稳态）：三条流水线如何同时工作
-
-双缓冲运行一段时间后，会进入稳态：三个硬件阶段分别处理不同 Tile，而不是围绕同一个 Tile 排队。
-
-```text
-                     MTE2 / CopyIn        Vector / Compute       MTE3 / CopyOut
-同一时刻的工作：     搬入 Tile i + 1      计算 Tile i            写回 Tile i - 1
-```
-
-对应的时间关系可以写成：
-
-```text
-时间 ->
-CopyIn :  [T0] [T1] [T2] [T3] [T4] ...
-Compute:       [T0] [T1] [T2] [T3] ...
-CopyOut:            [T0] [T1] [T2] ...
-```
-
-第一个 Tile 必须先完成搬入，最后一个 Tile 也必须等待写回，因此开始和结束阶段仍会有空档。双缓冲隐藏的是中间稳态中可重叠的等待时间；Tile 数越多，稳态在总执行时间中占比越高，优化越可能体现出来。
-
-#### 八、将双缓冲落实为 Add Medium Kernel
-
-##### （一）三个阶段各自做什么
-
-`CopyIn` 取得两块空闲输入 Buffer，从当前 Tile 的 GM 区间读取 `x`、`y`，随后将它们入队。`Compute` 取出一对已经准备好的输入 Tile，申请一块输出 Buffer 执行 Add，将输出入队，并立即归还不再需要的输入 Buffer。`CopyOut` 取出已完成的输出 Tile，写回其对应的 GM 区间后归还输出 Buffer。
-
-```cpp
-__aicore__ inline void Compute()
-{
-    auto xLocal = inQueueX.DeQue<float>();
-    auto yLocal = inQueueY.DeQue<float>();
-    auto zLocal = outQueueZ.AllocTensor<float>();
-
-    AscendC::Add(zLocal, xLocal, yLocal, TILE_LENGTH);
-
-    outQueueZ.EnQue(zLocal);
-    inQueueX.FreeTensor(xLocal);
-    inQueueY.FreeTensor(yLocal);
-}
-```
-
-这段顺序是双缓冲正确性的核心：输入 Buffer 必须在 Add 完成后才能归还；输出 Buffer 必须入队后才可由 CopyOut 取得；CopyOut 完成后才归还输出 Buffer。
-
-##### （二）完整的 `kernel.asc`
-
-下面的实现继续使用题目模板提供的 `run_kernel` 入口。它使用 C++ API 的 `TPipe + TQue` 管理双缓冲，不涉及算子注册。
-
-```cpp
-#include <cstdint>
-#include "kernel_operator.h"
-
-constexpr uint32_t NUM_BLOCKS = 16;
-constexpr uint32_t BLOCK_LENGTH = 65536;
-constexpr uint32_t TILE_LENGTH = 8192;
-constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
-constexpr uint32_t BUFFER_NUM = 2;
-constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
-
-class AddDoubleBufferKernel {
-public:
-    __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, GM_ADDR z)
-    {
-        const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
-        xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + blockOffset,
-                            BLOCK_LENGTH);
-        yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + blockOffset,
-                            BLOCK_LENGTH);
-        zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + blockOffset,
-                            BLOCK_LENGTH);
-
-        pipe.InitBuffer(inQueueX, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-        pipe.InitBuffer(inQueueY, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-        pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
-    }
-
-    __aicore__ inline void Process()
-    {
-        for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
-            CopyIn(tileIdx);
-            Compute();
-            CopyOut(tileIdx);
-        }
-    }
-
-private:
-    __aicore__ inline void CopyIn(uint32_t tileIdx)
-    {
-        const uint32_t tileOffset = tileIdx * TILE_LENGTH;
-        auto xLocal = inQueueX.AllocTensor<float>();
-        auto yLocal = inQueueY.AllocTensor<float>();
-
-        AscendC::DataCopy(xLocal, xGm[tileOffset], TILE_LENGTH);
-        AscendC::DataCopy(yLocal, yGm[tileOffset], TILE_LENGTH);
-
-        inQueueX.EnQue(xLocal);
-        inQueueY.EnQue(yLocal);
-    }
-
-    __aicore__ inline void Compute()
-    {
-        auto xLocal = inQueueX.DeQue<float>();
-        auto yLocal = inQueueY.DeQue<float>();
-        auto zLocal = outQueueZ.AllocTensor<float>();
-
-        AscendC::Add(zLocal, xLocal, yLocal, TILE_LENGTH);
-
-        outQueueZ.EnQue(zLocal);
-        inQueueX.FreeTensor(xLocal);
-        inQueueY.FreeTensor(yLocal);
-    }
-
-    __aicore__ inline void CopyOut(uint32_t tileIdx)
-    {
-        const uint32_t tileOffset = tileIdx * TILE_LENGTH;
-        auto zLocal = outQueueZ.DeQue<float>();
-
-        AscendC::DataCopy(zGm[tileOffset], zLocal, TILE_LENGTH);
-        outQueueZ.FreeTensor(zLocal);
-    }
-
-    AscendC::TPipe pipe;
-    AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueX;
-    AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueY;
-    AscendC::TQue<AscendC::QuePosition::VECOUT, BUFFER_NUM> outQueueZ;
-    AscendC::GlobalTensor<float> xGm;
-    AscendC::GlobalTensor<float> yGm;
-    AscendC::GlobalTensor<float> zGm;
-};
-
-__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
-{
-    AscendC::InitSocState();
-    AddDoubleBufferKernel kernel;
-    kernel.Init(x, y, z);
-    kernel.Process();
-}
-
-extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
-                           GM_ADDR y, const TensorGroupInfo& info_y,
-                           GM_ADDR z, const TensorGroupInfo& info_z,
-                           int64_t availableCoreNum, aclrtStream stream)
-{
-    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
-        info_z.numTensors != 1 || info_x.tensors[0].dtype != 0 ||
-        info_y.tensors[0].dtype != 0 || info_z.tensors[0].dtype != 0 ||
-        info_x.tensors[0].shape[0] != TOTAL_LENGTH ||
-        info_y.tensors[0].shape[0] != TOTAL_LENGTH ||
-        info_z.tensors[0].shape[0] != TOTAL_LENGTH ||
-        availableCoreNum <= 0) {
-        return;
-    }
-
-    add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
-}
-```
-
-双缓冲不会自动保证加速：当 CopyIn、Compute、CopyOut 中某一阶段显著更慢时，它仍会主导总时间；Tile 数太少时，预热与收尾阶段的空档占比也会更高。完成实现后，应使用 profiling 对比第五节的单缓冲版本与本节版本的 Kernel 耗时，再判断这份重叠是否带来实际收益。
+`192 KB` 小于单个 AI Core 约 `256 KB` 的 UB 名义容量，为运行时资源和其他临时数据保留了空间。每次调整 Tile 长度或缓冲区数量，都应重新进行这一容量检查。
