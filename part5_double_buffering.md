@@ -108,50 +108,40 @@ write(global_y, y);   // 3. 发射到 PIPE_MTE3：将 UB 中的 y 写回主存�
 
 #### 四、双缓冲（Double Buffering）机制：片上内存的乒乓重叠
 
-前面已经拆解了昇腾 AI 加速卡的硬件结构与异步指令流。硬件上独立的 MTE2、Vector 与 MTE3 提供了并发重叠的客观条件；而真正解决数据竞争、在软件层面建立缓冲区隔离的核心手段，就是双缓冲（Double Buffering）技术。
+在前两节中，我们拆解了昇腾 AI 加速卡的硬件结构与异步指令流。硬件上独立的 MTE2、Vector 与 MTE3 提供了并发重叠的客观条件；而真正解决数据竞争、在软件层面建立“缓冲区隔离”的核心手段，就是双缓冲（Double Buffering）技术。
 
 ##### （一）Ascend C 编程模型中的双缓冲抽象
 
-在 Ascend C 的 C++ API 中，Unified Buffer（UB）的管理并不是由开发者手动计算指针偏移量，而是通过逻辑队列 `TQue` 与管道内存管理对象 `TPipe` 共同完成。Ascend C 将双缓冲抽象为带深度（Buffer Depth）的内存队列：
+在 Ascend C 的 C++ 高阶 API 中，Unified Buffer（UB）的管理并不是由开发者手动计算指针偏移量，而是通过逻辑队列 `TQue` 与管道内存管理对象 `TPipe` 共同完成。结合框架架构图，Ascend C 将双缓冲抽象为带深度（Buffer Depth）的内存队列：
 
 ```cpp
-// 输入队列：QuePosition::VECIN，缓冲区深度为 2
+// 1. 声明数据输入队列（QuePosition::VECIN），缓冲区深度设为 2（开启双缓冲）
 TQue<QuePosition::VECIN, 2> inQueue;
 
-// 输出队列：QuePosition::VECOUT，缓冲区深度为 2
+// 2. 声明数据输出队列（QuePosition::VECOUT），缓冲区深度设为 2（开启双缓冲）
 TQue<QuePosition::VECOUT, 2> outQueue;
 ```
 
-当模板参数中的深度设为 `2` 时，`TQue` 会在 UB 中准备两块大小相同、物理地址彼此隔离的存储槽位。当前 Tile 使用其中一块时，下一 Tile 可以使用另一块完成搬入，从而避免覆盖正在被 Vector 单元读取的数据。
-
 ![TQue 双缓冲队列拓扑](assets/double-buffer/tque-double-buffer-topology.png)
 
-*图 6-3：`inQueue` 与 `outQueue` 中各包含两块独立的片上工作区。*
+*图 6-3：TQue 双缓冲队列拓扑（`inQueue` 与 `outQueue` 内部均包含 Block 0 与 Block 1 两块独立的片上工作区）。*
 
-##### （二）用 `TPipe::InitBuffer` 分配双缓冲空间
+当模板参数中的深度设置为 `2` 时，`TQue` 逻辑队列会在 UB 内存中自动切分出两块大小完全一致、物理地址互不干扰的存储槽位：Block 0 与 Block 1。
 
-声明队列后，需要在算子初始化阶段调用 `TPipe::InitBuffer`，在 UB 中完成实际的空间划分：
+##### （二）片上内存分配：`TPipe::InitBuffer` 的双缓冲控制
+
+声明队列模板后，需要在算子初始化阶段（通常在 `Init` 函数中）调用 `TPipe` 的 `InitBuffer` 接口对 UB 空间进行真正的物理划分。结合框架初始化伪代码：
 
 ```cpp
-// Buffer Depth = 2，分别为输入队列与输出队列分配两块缓冲区
-pipe.InitBuffer(inQueue, 2, this->tileLength * sizeof(float));
-pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(float));
+// 利用 TPipe 分配片上 UB 内存（Buffer Depth = 2 开启 Double Buffer 双缓冲）
+pipe.InitBuffer(inQueue, 2, this->tileLength * sizeof(half));
+pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 ```
 
-`InitBuffer` 的三个参数分别表示：
+接口参数说明：
 
-- **队列对象**：需要分配空间的 `TQue`，例如 `inQueue` 或 `outQueue`。
-- **缓冲区数量**：设为 `1` 时是单缓冲；设为 `2` 时开启双缓冲，UB 中会分配两块独立的物理空间。
-- **单块缓冲区大小**：每块缓冲区的字节长度。本例中是一段 Tile 的数据量，即 `tileLength * sizeof(float)`。
+- **第一个参数（队列对象）**：绑定对应的 `TQue` 句柄，例如 `inQueue` 或 `outQueue`。
+- **第二个参数（`bufferNum` / 深度）**：设置为 `1` 时为单缓冲区模式，底层只在 UB 中分配 1 块大小为 `tileLength * sizeof(half)` 的空间；设置为 `2` 时开启双缓冲模式，框架会在 UB 中申请两倍的物理内存空间，即自动分配 Block 0 与 Block 1。
+- **第三个参数（`len` / 单个 Block 大小）**：指定单个缓冲区 Block 的字节长度，此处为单个 Tile 处理的数据字节量，即 `tileLength * sizeof(half)`。
 
-开启双缓冲后，队列的实际 UB 占用为 `2 * len`。因此 Tile 长度不能只按单缓冲计算，还必须将两套交替工作的缓冲区一并纳入容量预算。
-
-对于 Add Medium，`TILE_LENGTH = 8192`。一个 `float32` Tile 占用 `8192 * 4 B = 32 KB`；输入 `x`、输入 `y` 与输出 `z` 都需要两套工作区，因此总占用为：
-
-$$
-3 \times 2 \times 8192 \times 4\text{ B}
-= 196608\text{ B}
-= 192\text{ KB}
-$$
-
-`192 KB` 小于单个 AI Core 约 `256 KB` 的 UB 名义容量，为运行时资源和其他临时数据保留了空间。每次调整 Tile 长度或缓冲区数量，都应重新进行这一容量检查。
+**内存占用提醒**：开启双缓冲（`bufferNum = 2`）时，算子在 UB 上占用的实际片上内存为 $2 \times \text{len}$。因此在设计 Tile 大小（`tileLength`）时，必须注意单个队列总容量不能超出芯片硬件 UB 的上限。
