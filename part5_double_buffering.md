@@ -156,7 +156,7 @@ pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 
 *图 6-4：CopyIn、Compute 与 CopyOut 在不同 Tile 上交叠推进。*
 
-###### （1）时间段 1：预热准备阶段（CopyIn-Tile0）
+##### （1）时间段 1：预热准备阶段（CopyIn-Tile0）
 
 流水线刚启动，硬件首先进行数据预取：
 
@@ -169,7 +169,7 @@ pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 
 *图 6-5：Tile0 搬入后，`inQueue` 的 Block 0 被占用。*
 
-###### （2）时间段 3：稳定重叠峰值阶段（CopyOut-Tile0 / Compute-Tile1 / CopyIn-Tile2）
+##### （2）时间段 3：稳定重叠峰值阶段（CopyOut-Tile0 / Compute-Tile1 / CopyIn-Tile2）
 
 当流水线推进到时间段 3 时，三条独立硬件管道达到了完全充盈的状态，展现出双缓冲的最高重叠效率：
 
@@ -183,7 +183,7 @@ pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 
 *图 6-6：读、算、写同时推进，输入队列两块缓冲区均被占用。*
 
-###### （3）时间段 5：收尾清空阶段（CopyOut-Tile2）
+##### （3）时间段 5：收尾清空阶段（CopyOut-Tile2）
 
 所有 Tile 的搬入与计算均已完成，流水线进入最后的写回收尾：
 
