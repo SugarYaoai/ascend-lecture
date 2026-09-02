@@ -195,3 +195,109 @@ pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 ![时间段 5 的队列状态](assets/double-buffer/double-buffer-stage-5.png)
 
 *图 6-7：最后一个 Tile 写回期间，输入队列已清空。*
+
+#### 五、完整可复制粘贴的 `kernel.asc`
+
+下面是 Add Medium 的双缓冲版本。`inQueueX`、`inQueueY` 和 `outQueueZ` 均设为深度 `2`：当前 Tile 在 Vector 单元计算时，下一 Tile 可以占用另一组输入缓冲区完成搬入。三个队列共占用 $3 \times 2 \times 8192 \times 4\text{ B} = 192\text{ KB}$ UB 空间。
+
+```cpp
+#include <cstdint>
+#include "kernel_operator.h"
+
+constexpr uint32_t NUM_BLOCKS = 16;
+constexpr uint32_t BLOCK_LENGTH = 65536;
+constexpr uint32_t TILE_LENGTH = 8192;
+constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
+constexpr uint32_t BUFFER_NUM = 2;
+constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
+
+class AddDoubleBufferKernel {
+public:
+    __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+    {
+        const uint32_t blockOffset = block_idx * BLOCK_LENGTH;
+        xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + blockOffset, BLOCK_LENGTH);
+        yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + blockOffset, BLOCK_LENGTH);
+        zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + blockOffset, BLOCK_LENGTH);
+
+        pipe.InitBuffer(inQueueX, BUFFER_NUM, TILE_LENGTH * sizeof(float));
+        pipe.InitBuffer(inQueueY, BUFFER_NUM, TILE_LENGTH * sizeof(float));
+        pipe.InitBuffer(outQueueZ, BUFFER_NUM, TILE_LENGTH * sizeof(float));
+    }
+
+    __aicore__ inline void Process()
+    {
+        for (uint32_t tileIdx = 0; tileIdx < TILE_NUM; ++tileIdx) {
+            CopyIn(tileIdx);
+            Compute();
+            CopyOut(tileIdx);
+        }
+    }
+
+private:
+    __aicore__ inline void CopyIn(uint32_t tileIdx)
+    {
+        const uint32_t offset = tileIdx * TILE_LENGTH;
+        AscendC::LocalTensor<float> xLocal = inQueueX.AllocTensor<float>();
+        AscendC::LocalTensor<float> yLocal = inQueueY.AllocTensor<float>();
+
+        AscendC::DataCopy(xLocal, xGm[offset], TILE_LENGTH);
+        AscendC::DataCopy(yLocal, yGm[offset], TILE_LENGTH);
+        inQueueX.EnQue(xLocal);
+        inQueueY.EnQue(yLocal);
+    }
+
+    __aicore__ inline void Compute()
+    {
+        AscendC::LocalTensor<float> xLocal = inQueueX.DeQue<float>();
+        AscendC::LocalTensor<float> yLocal = inQueueY.DeQue<float>();
+        AscendC::LocalTensor<float> zLocal = outQueueZ.AllocTensor<float>();
+
+        AscendC::Add(zLocal, xLocal, yLocal, TILE_LENGTH);
+        outQueueZ.EnQue(zLocal);
+        inQueueX.FreeTensor(xLocal);
+        inQueueY.FreeTensor(yLocal);
+    }
+
+    __aicore__ inline void CopyOut(uint32_t tileIdx)
+    {
+        const uint32_t offset = tileIdx * TILE_LENGTH;
+        AscendC::LocalTensor<float> zLocal = outQueueZ.DeQue<float>();
+
+        AscendC::DataCopy(zGm[offset], zLocal, TILE_LENGTH);
+        outQueueZ.FreeTensor(zLocal);
+    }
+
+private:
+    AscendC::TPipe pipe;
+    AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueX;
+    AscendC::TQue<AscendC::QuePosition::VECIN, BUFFER_NUM> inQueueY;
+    AscendC::TQue<AscendC::QuePosition::VECOUT, BUFFER_NUM> outQueueZ;
+    AscendC::GlobalTensor<float> xGm, yGm, zGm;
+};
+
+extern "C" __global__ __aicore__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+{
+    AddDoubleBufferKernel op;
+    op.Init(x, y, z);
+    op.Process();
+}
+
+extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
+                           GM_ADDR y, const TensorGroupInfo& info_y,
+                           GM_ADDR z, const TensorGroupInfo& info_z,
+                           int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
+        info_z.numTensors != 1 || info_x.tensors[0].dtype != 0 ||
+        info_y.tensors[0].dtype != 0 || info_z.tensors[0].dtype != 0 ||
+        info_x.tensors[0].shape[0] != TOTAL_LENGTH ||
+        info_y.tensors[0].shape[0] != TOTAL_LENGTH ||
+        info_z.tensors[0].shape[0] != TOTAL_LENGTH ||
+        availableCoreNum <= 0) {
+        return;
+    }
+
+    add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
+}
+```

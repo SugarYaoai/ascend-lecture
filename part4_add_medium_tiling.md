@@ -123,3 +123,68 @@ $$
 当前只开辟了一套 UB 缓冲区：`xLocal`、`yLocal` 与 `zLocal`。如果让 MTE 在 Vector 计算 Tile `0` 的同时预读 Tile `1`，新旧 Tile 会写入同一块片上地址，造成数据覆盖与脏读。
 
 因此，下一节会引入双缓冲（Double Buffering）：为相邻 Tile 准备两套可轮换的 UB 工作区，让 Tile $i$ 的计算与 Tile $i+1$ 的搬运能够安全地重叠推进。
+
+#### 五、完整可复制粘贴的 `kernel.asc`
+
+下面给出 Add Medium 的单缓冲 Tile 版本。它保持每个 Block 处理 `65536` 个元素、每个 Tile 处理 `8192` 个元素；三块 `LocalTensor<float>` 在循环中复用，因此 UB 工作区始终为一个 Tile 的 `96 KB`。
+
+```cpp
+#include <cstdint>
+#include "kernel_operator.h"
+
+constexpr uint32_t NUM_BLOCKS = 16;
+constexpr uint32_t BLOCK_LENGTH = 65536;
+constexpr uint32_t TILE_LENGTH = 8192;
+constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
+constexpr int64_t TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
+
+template <uint32_t blockLength, uint32_t tileLength>
+__vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
+{
+    AscendC::InitSocState();
+
+    const uint32_t blockOffset = block_idx * blockLength;
+    AscendC::GlobalTensor<float> xGm, yGm, zGm;
+    xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + blockOffset, blockLength);
+    yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + blockOffset, blockLength);
+    zGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(z) + blockOffset, blockLength);
+
+    AscendC::LocalMemAllocator<AscendC::Hardware::UB> ubAllocator;
+    auto xLocal = ubAllocator.Alloc<float, tileLength>();
+    auto yLocal = ubAllocator.Alloc<float, tileLength>();
+    auto zLocal = ubAllocator.Alloc<float, tileLength>();
+
+    constexpr uint32_t tileNum = blockLength / tileLength;
+    for (uint32_t tileIdx = 0; tileIdx < tileNum; ++tileIdx) {
+        const uint32_t tileOffset = tileIdx * tileLength;
+
+        AscendC::DataCopy(xLocal, xGm[tileOffset], tileLength);
+        AscendC::DataCopy(yLocal, yGm[tileOffset], tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        AscendC::Add(zLocal, xLocal, yLocal, tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+
+        AscendC::DataCopy(zGm[tileOffset], zLocal, tileLength);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+}
+
+extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
+                           GM_ADDR y, const TensorGroupInfo& info_y,
+                           GM_ADDR z, const TensorGroupInfo& info_z,
+                           int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
+        info_z.numTensors != 1 || info_x.tensors[0].dtype != 0 ||
+        info_y.tensors[0].dtype != 0 || info_z.tensors[0].dtype != 0 ||
+        info_x.tensors[0].shape[0] != TOTAL_LENGTH ||
+        info_y.tensors[0].shape[0] != TOTAL_LENGTH ||
+        info_z.tensors[0].shape[0] != TOTAL_LENGTH ||
+        availableCoreNum <= 0) {
+        return;
+    }
+
+    add_custom<BLOCK_LENGTH, TILE_LENGTH><<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
+}
+```
