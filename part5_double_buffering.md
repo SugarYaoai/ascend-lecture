@@ -145,3 +145,53 @@ pipe.InitBuffer(outQueue, 2, this->tileLength * sizeof(half));
 - **第三个参数（`len` / 单个 Block 大小）**：指定单个缓冲区 Block 的字节长度，此处为单个 Tile 处理的数据字节量，即 `tileLength * sizeof(half)`。
 
 **内存占用提醒**：开启双缓冲（`bufferNum = 2`）时，算子在 UB 上占用的实际片上内存为 $2 \times \text{len}$。因此在设计 Tile 大小（`tileLength`）时，必须注意单个队列总容量不能超出芯片硬件 UB 的上限。
+
+##### （三）双缓冲乒乓流水线状态推演
+
+为了更直观地理解双缓冲如何实现“数据搬运与计算的流水线重叠”，下面追踪 3 个 Tile（Tile0、Tile1、Tile2）在执行过程中的时间轴，以及片上逻辑队列 `inQueue` 和 `outQueue` 内部缓冲区的动态占用状态。
+
+在深度为 `2` 的双缓冲机制下，`inQueue` 和 `outQueue` 各自拥有两个独立的存储槽位，即 **Block 0** 与 **Block 1**。
+
+![3 个 Tile 的双缓冲流水线时间轴](assets/double-buffer/double-buffer-timeline.png)
+
+*图 6-4：CopyIn、Compute 与 CopyOut 在不同 Tile 上交叠推进。*
+
+###### （1）时间段 1：预热准备阶段（CopyIn-Tile0）
+
+流水线刚启动，硬件首先进行数据预取：
+
+- **流水线动作**：MTE2 搬运引擎执行 `CopyIn-Tile0`，将 Tile0 的数据从 GM 搬运到片上 UB。
+- **`TQue` 状态演进**：
+  - **`inQueue`**：Block 0 入队，标记为 **“已占用（Tile0）”**；Block 1 维持 **“空闲”**。
+  - **`outQueue`**：Block 0 与 Block 1 均处于 **“空闲”** 状态。
+
+![时间段 1 的队列状态](assets/double-buffer/double-buffer-stage-1.png)
+
+*图 6-5：Tile0 搬入后，`inQueue` 的 Block 0 被占用。*
+
+###### （2）时间段 3：稳定重叠峰值阶段（CopyOut-Tile0 / Compute-Tile1 / CopyIn-Tile2）
+
+当流水线推进到时间段 3 时，三条独立硬件管道达到了完全充盈的状态，展现出双缓冲的最高重叠效率：
+
+1. **MTE3 引擎**：执行 `CopyOut-Tile0`，将 Tile0 在 UB 中计算好的结果写回 GM。
+2. **Vector 单元**：执行 `Compute-Tile1`，对 Tile1 进行向量计算。
+3. **MTE2 引擎**：执行 `CopyIn-Tile2`，提前预读 Tile2 的数据到片上内存。
+
+此时，`inQueue` 中的 Tile1 正在被 Vector 单元读取使用，占用 Block 1；MTE2 则将 Tile2 搬入 Block 0。两个 Block 都被有效使用。`outQueue` 中，Tile0 的结果仍驻留在 Block 0，等待 MTE3 完成写回。
+
+![时间段 3 的队列状态](assets/double-buffer/double-buffer-stage-3.png)
+
+*图 6-6：读、算、写同时推进，输入队列两块缓冲区均被占用。*
+
+###### （3）时间段 5：收尾清空阶段（CopyOut-Tile2）
+
+所有 Tile 的搬入与计算均已完成，流水线进入最后的写回收尾：
+
+- **流水线动作**：MTE2 与 Vector 单元均已完成各自使命，仅由 MTE3 引擎执行 `CopyOut-Tile2`，将最后一个 Tile 的计算结果推回 GM。
+- **`TQue` 状态演进**：
+  - **`inQueue`**：所有输入 Tile 已消费完毕并全部出队释放，Block 0 与 Block 1 恢复为 **“空闲”**。
+  - **`outQueue`**：Tile2 的结果正驻留在 Block 0 中，标记为 **“已占用（Tile2）”**；待 MTE3 完成写回后，整个队列将完全清空。
+
+![时间段 5 的队列状态](assets/double-buffer/double-buffer-stage-5.png)
+
+*图 6-7：最后一个 Tile 写回期间，输入队列已清空。*
