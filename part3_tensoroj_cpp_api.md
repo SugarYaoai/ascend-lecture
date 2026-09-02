@@ -7,15 +7,15 @@
 
 C++ API 的核心使命就是利用类型系统解决这些痛点。它引入 `GlobalTensor<float>` 与 `LocalTensor<float>`，让数据携带确切的类型与长度信息；同时通过 `LocalMemAllocator` 结构化地管理 UB 片上空间，为后续升级到 `TPipe`、`TQue` 队列化流水线奠定基础。
 
-C++ API 并没有改变底层的物理搬运规则。它只是在裸地址与硬件 SRAM 之上套了一层强类型外衣，在编译期帮助开发者拦截大部分低级错误。
+C++ API 并没有改变底层的物理搬运规则。它只是在裸地址与硬件 SRAM 之上套了一层强类型外衣，在编译时帮助开发者拦截大部分低级错误。
 
 #### 一、从 C API 到 C++ API 的重构三步法
 
-##### （一）编译期模板参数与 GM 视图绑定
+##### （一）编译时模板参数与 GM 视图绑定
 
 算子继续复用第三节的静态执行参数：
 
-`LocalMemAllocator` 的 `Alloc<float, blockLength>()` 需要在编译期获知局部张量长度，才能为 UB 规划固定空间。因此 `blockLength` 不是普通的运行时变量，而是 `add_custom` 的 C++ 模板参数；Host 侧通过 `add_custom<BLOCK_LENGTH>` 实例化长度为 `10752` 的 Kernel：
+`LocalMemAllocator` 的 `Alloc<float, blockLength>()` 需要在编译时获知局部张量长度，才能为 UB 规划固定空间。因此 `blockLength` 不是普通的运行时变量，而是 `add_custom` 的 C++ 模板参数；Host 侧通过 `add_custom<BLOCK_LENGTH>` 实例化长度为 `10752` 的 Kernel：
 
 <div class="api-compare">
   <div class="api-compare-side c-api">
