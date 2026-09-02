@@ -1,10 +1,12 @@
 ### 第六节 TensorOJ 实战：Add Medium 的双缓冲流水线
 
-本节继续实现 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)，并优化它的执行速度。
+本节继续实现 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)，重点优化算子的执行效率。
 
-第五节的 Tile 循环每次都能正确完成一小段 Add；本节要解决的核心问题是：**当 AI Core 正在计算 Tile `i` 时，怎样同时搬入 Tile `i + 1` 的输入，并写回 Tile `i - 1` 的结果，而且不让不同 Tile 覆盖彼此正在使用的 UB 数据？**
+在上一节中，Tile 循环虽然解决了片上 SRAM 溢出的问题，但 MTE 搬运引擎与 Vector 计算单元只能串行交替运行：Vector 计算时 MTE 只能闲置，MTE 搬运时 Vector 只能等待。
 
-这个问题决定了读、算、写能否在不同 Tile 上重叠推进。为让不同 Tile 使用彼此独立的 UB 工作区、实现读写分离，本节引入**双缓冲技术**。
+要消除这种硬件空转，核心在于**让“计算当前 Tile”与“搬运下一 Tile”同时进行**。然而在单缓冲区下，预读下一 Tile 会直接覆盖当前正在计算的片上数据，引发数据竞争。
+
+本节将引入**双缓冲（Double Buffering）技术**：通过开辟两套可交替轮换的片上缓冲区（乒乓机制），实现内存搬运与向量计算的并发重叠，彻底拉满硬件算力利用率。
 
 #### 一、异步指令流：双缓冲的硬件基础
 
