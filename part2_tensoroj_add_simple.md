@@ -1,8 +1,8 @@
-### 第三节 TensorOJ 实战：基于 C API 实现 Add 算子
+### 1.3 TensorOJ 实战：基于 C API 实现 Add 算子
 
 本节对应 TensorOJ 题目：[Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。TensorOJ 与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
 
-#### 一、题目模板与待完成内容
+#### 1.3.1 题目模板与待完成内容
 
 打开题目工程时，开发者面对的是一份尚未完成的 `kernel.asc`。评测框架已经承担了数据准备、结果校验等固定工作；开发者要补齐两个位置：定义在 NPU 上执行的 `add_custom` Kernel，以及在 `run_kernel` 中按给定接口启动它。
 
@@ -37,9 +37,9 @@ extern "C" void run_kernel(
 
 后续先完成 `add_custom` 的 Device 端实现，再回到 `run_kernel`，利用模板传入的参数完成检查与启动。入口处的各个参数会在真正使用时逐一拆解。
 
-#### 二、`add_custom` Kernel 算子实现
+#### 1.3.2 `add_custom` Kernel 算子实现
 
-##### （一）第一步：手算切片参数与 UB 容量预算
+##### 1.3.2.1 第一步：手算切片参数与 UB 容量预算
 
 编写 `add_custom` 前，必须先算清两件事：完整向量如何在多个 Block 之间分工，以及每个 Block 的三段局部数据能否放入单个 AI Core 的 UB。对于固定长度 `172032` 的输入，本例采用如下静态执行参数：
 
@@ -69,7 +69,7 @@ $$
 
 单个 AI Core 的 UB 虽然标称 `256 KB`，但编译器生成的控制信息、运行时框架自身也要占用片上资源。用户可自由支配的空间远不到全部标称容量。分配 `252 KB` 的三段数组会让 UB 占用率达到约 `98.4%`，可能在编译期静态资源检查或运行时分配阶段直接失败。因此，将任务切分为 16 个 Block、把单核 UB 占用控制在 `126 KB`，才是当前固定规格下安全可靠的配置。
 
-##### （二）第二步：将无类型内存转换为 float32 指针
+##### 1.3.2.2 第二步：将无类型内存转换为 float32 指针
 
 确定切片参数与 UB 预算后，需要把模板传入的通用 GM 地址转换为可进行元素级寻址的 `float32` 指针。SIMD C API 提供了这一过程中使用的搬运、计算与同步接口：
 
@@ -88,7 +88,7 @@ __gm__ float* zGm = reinterpret_cast<__gm__ float*>(z) + offset;
 
 这一步不产生任何硬件搬运代码，只是改变 C++ 编译器理解地址与计算偏移的方式。
 
-##### （三）第三步：组装“搬运-计算-写回”数据流
+##### 1.3.2.3 第三步：组装“搬运-计算-写回”数据流
 
 现在将硬件初始化、内存定位、片上分配与读、算、写三阶段组装为完整的 `add_custom` Kernel：
 
@@ -130,9 +130,9 @@ $$
 x[32256:43008] + y[32256:43008] \longrightarrow z[32256:43008]
 $$
 
-#### 三、`run_kernel` 调用接口实现
+#### 1.3.3 `run_kernel` 调用接口实现
 
-##### （一）防御性参数校验
+##### 1.3.3.1 防御性参数校验
 
 回到 Host 侧的 `run_kernel`。模板传入的 `x`、`y`、`z` 是 Device 侧 GM 地址；`info_x`、`info_y`、`info_z` 记录输入的数量、形状与数据类型，`availableCoreNum` 表示当前可用向量核数。由于本 Kernel 针对固定长度 `float32` 向量定制，先进行参数校验，防止规格不匹配的任务误入该执行路径：
 
@@ -148,7 +148,7 @@ if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
 }
 ```
 
-##### （二）Stream 挂载与 Kernel 启动
+##### 1.3.3.2 Stream 挂载与 Kernel 启动
 
 校验通过后，使用 `<<<...>>>` 语法启动 Kernel：
 
@@ -164,7 +164,7 @@ add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 | 动态 UB 参数 | `nullptr` | 不申请动态 UB 空间；本题直接使用 Kernel 内静态声明的 `__ubuf__` 数组。 |
 | `stream` | 模板传入 | 将本次 Launch 任务推入特定的昇腾异步执行队列。 |
 
-#### 四、完整交付代码：`kernel.asc`
+#### 1.3.4 完整交付代码：`kernel.asc`
 
 ```cpp
 #include <cstdint>

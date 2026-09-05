@@ -1,4 +1,4 @@
-### 第四节 TensorOJ 实战：基于 C++ API 实现 Add 算子
+### 1.4 TensorOJ 实战：基于 C++ API 实现 Add 算子
 
 第三节用 C API 写 Add 时，开发者需要亲自管理 GM 裸指针、UB 静态数组，还要时刻切换“字节数”与“元素个数”两套单位。这种底层写法能帮助我们理解硬件原理，但在实际算子开发中极易引发两类问题：
 
@@ -9,9 +9,9 @@ C++ API 的核心使命就是利用类型系统解决这些痛点。它引入 `G
 
 C++ API 并没有改变底层的物理搬运规则。它只是在裸地址与硬件 SRAM 之上套了一层强类型外衣，在编译时帮助开发者拦截大部分低级错误。
 
-#### 一、从 C API 到 C++ API 的重构三步法
+#### 1.4.1 从 C API 到 C++ API 的重构三步法
 
-##### （一）编译时模板参数与 GM 视图绑定
+##### 1.4.1.1 编译时模板参数与 GM 视图绑定
 
 算子继续复用第三节的静态执行参数：
 
@@ -63,7 +63,7 @@ zGm.SetGlobalBuffer(
   </div>
 </div>
 
-##### （二）UB 结构化分配
+##### 1.4.1.2 UB 结构化分配
 
 UB 侧不再使用三个 C 风格数组，而是通过 `LocalMemAllocator` 分配三个 `LocalTensor<float>`。这三块张量分别保存当前 Block 的 `x`、`y` 和 `z` 片段：
 
@@ -92,7 +92,7 @@ $$
 
 这段代码直接给出了当前 AI Core 的 UB 工作区：三段 `float32` 张量，共 `126 KB`。局部资源的类型、长度和分配位置集中在同一处，后续阅读 `DataCopy` 与 `Add` 时不必再回溯数组地址和大小。
 
-##### （三）强类型 DataCopy 与流水线屏障
+##### 1.4.1.3 强类型 DataCopy 与流水线屏障
 
 GM 视图与 UB 工作区建立后，数据流仍然遵循“搬入 -> 计算 -> 写回”三个阶段；改变的是长度的表达方式。C API 需要为搬运接口手动换算字节数，C++ API 则由 Tensor 的 `float` 类型推导单元素宽度：
 
@@ -128,7 +128,7 @@ AscendC::PipeBarrier&lt;PIPE_ALL&gt;();</code></pre>
 
 `DataCopy` 的源和目的都已是 `float` Tensor，因此 `blockLength` 直接表示元素个数，不必手写 `sizeof(float)`。`PipeBarrier<PIPE_ALL>()` 是当前 Block、当前 AI Core 内的流水线屏障：它保证输入写入 UB 后再被 Vector 单元读取，也保证结果生成后再写回 GM。
 
-#### 二、C API 与 C++ API 的代码组织差异
+#### 1.4.2 C API 与 C++ API 的代码组织差异
 
 | 架构维度 | C API | C++ API | 工程价值 |
 | --- | --- | --- | --- |
@@ -144,7 +144,7 @@ $$
 
 `GlobalTensor` 和 `LocalTensor` 用于绑定这条路径上的数据范围，`DataCopy` 负责实际搬运，`PipeBarrier` 负责当前 AI Core 内搬运与计算阶段的依赖同步。C++ API 提升的是代码对硬件资源、单位和生命周期的表达能力，而不是替代这些硬件步骤。
 
-#### 三、完整交付代码解析：kernel.asc
+#### 1.4.3 完整交付代码解析：kernel.asc
 
 `run_kernel` 的题目接口与第三节相同：它校验本题固定的输入规格后，使用 `add_custom<BLOCK_LENGTH><<<NUM_BLOCKS, nullptr, stream>>>(x, y, z)` 实例化模板 Kernel，并将 16 Block 的任务挂载到模板传入的 Stream。下面是完整的 `kernel.asc`：
 

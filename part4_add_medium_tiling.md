@@ -1,6 +1,6 @@
-### 第五节 TensorOJ 实战：Add Medium 的 Tile 分块
+### 1.5 TensorOJ 实战：Add Medium 的 Tile 分块
 
-#### 一、问题引入：更大数据量带来的片上内存挑战
+#### 1.5.1 问题引入：更大数据量带来的片上内存挑战
 
 **本节题目链接：** [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)
 
@@ -12,9 +12,9 @@ $$
 
 计算公式没有变，但单次任务的数据规模扩大到 $N = 1048576$，即百万级元素。本题固定启动 `16` 个 Block，因此每个 Block 需要处理 `65536` 个元素。核心矛盾在于：单个 Block 的输入和输出已经无法一次性放入片上 UB。
 
-#### 二、片上内存瓶颈与 Tile 切分的必要性
+#### 1.5.2 片上内存瓶颈与 Tile 切分的必要性
 
-##### （一）为什么仅靠 Block 切分还不够
+##### 1.5.2.1 为什么仅靠 Block 切分还不够
 
 Block 切分解决的是多核分工：把长向量切成多段，再由多个 AI Core 并行处理。它能缩短整体运行时间，却无法改变单个 AI Core 内部 UB 的容量上限。
 
@@ -32,7 +32,7 @@ $$
 
 > **物理约束：** 单个 AI Core 的 UB 名义容量约为 `256 KB`，而全量载入需要 `768 KB`，达到容量上限的三倍。这不是性能较差，而是片上 SRAM 容量不足；静态分配可能在编译阶段或运行初期直接失败。
 
-##### （二）Block 与 Tile 构成两级切分
+##### 1.5.2.2 Block 与 Tile 构成两级切分
 
 Tile 并不重新划分 AI Core 之间的分工，而是在同一个 AI Core 内部把过长的数据段拆成多份，通过循环分批处理：
 
@@ -57,7 +57,7 @@ constexpr uint32_t TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
 
 通过 `8` 次 Tile 循环，一个 Block 完成自己的 `65536` 个元素；任意时刻只有一个 `96 KB` 的 Tile 工作集驻留在 UB 中，而不是不可容纳的 `768 KB`。
 
-#### 三、单个 AI Core 如何循环处理 Tile
+#### 1.5.3 单个 AI Core 如何循环处理 Tile
 
 在 C++ API 中，`block_idx` 先定位当前 Block 的 GM 数据范围；随后 `tileOffset` 在每轮循环中推进，三块 `LocalTensor` 则持续复用同一份 UB 空间：
 
@@ -103,9 +103,9 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 
 以 Block `0` 为例，它负责区间 `[0, 65536)`；循环会依次处理 `Tile 0: [0, 8192)`、`Tile 1: [8192, 16384)` 直到 `Tile 7: [57344, 65536)`。每轮都经历同一条数据路径：GM 搬入 UB，在 UB 中相加，再将结果写回 GM。
 
-#### 四、串行 Tile 循环中的硬件等待
+#### 1.5.4 串行 Tile 循环中的硬件等待
 
-##### （一）搬运与计算串行：Vector 单元与 MTE 引擎互等
+##### 1.5.4.1 搬运与计算串行：Vector 单元与 MTE 引擎互等
 
 Tile 切分解决了 UB 装不下的问题，但当前串行循环还没有充分利用硬件。在 AI Core 中，MTE 搬运引擎与 Vector 计算单元是相互独立的硬件；而上面的循环在每个阶段后都加入屏障，使操作必须按顺序推进：
 
@@ -118,13 +118,13 @@ $$
 - **Vector 单元等待搬运**：MTE2 从 GM 搬入 Tile `0` 时，Vector 计算单元没有可计算的数据。
 - **MTE 引擎等待计算**：Vector 单元计算加法时，MTE 无法预读下一个 Tile。
 
-##### （二）根因：单缓冲区引发数据竞争
+##### 1.5.4.2 根因：单缓冲区引发数据竞争
 
 当前只开辟了一套 UB 缓冲区：`xLocal`、`yLocal` 与 `zLocal`。如果让 MTE 在 Vector 计算 Tile `0` 的同时预读 Tile `1`，新旧 Tile 会写入同一块片上地址，造成数据覆盖与脏读。
 
 因此，下一节会引入双缓冲（Double Buffering）：为相邻 Tile 准备两套可轮换的 UB 工作区，让 Tile $i$ 的计算与 Tile $i+1$ 的搬运能够安全地重叠推进。
 
-#### 五、完整可复制粘贴的 `kernel.asc`
+#### 1.5.5 完整可复制粘贴的 `kernel.asc`
 
 下面给出 Add Medium 的单缓冲 Tile 版本。它保持每个 Block 处理 `65536` 个元素、每个 Tile 处理 `8192` 个元素；三块 `LocalTensor<float>` 在循环中复用，因此 UB 工作区始终为一个 Tile 的 `96 KB`。
 
