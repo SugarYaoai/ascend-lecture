@@ -68,3 +68,154 @@ $$
 - **任务要求**：将输入均分给 `32` 个 AI Core。每个 Core 先计算 `core_local_sum`，再通过 `SetAtomicAdd` 将局部和安全地累加到同一个 GM 输出地址。
 - **学习重点**：基于 `block_idx` 的跨核数据切分、多核写同一输出地址时的竞争问题，以及硬件 Atomic Add 的使用。
 - **延伸问题**：比较 Atomic 规约与 Two-Stage 规约。后者通过 WorkSpace 保存各 Core 局部和，再进行第二次归约，以降低原子写带来的开销。
+
+### 第二节 Easy 关卡：单核单 Tile 的片上归约实现
+
+本节聚焦最基础的归约场景：数据量恰好可以一次性装入单个 AI Core 的 Unified Buffer（UB）中。通过这个单核单 Tile 的例子，将彻底理清数据从 $N$ 折叠到 $1$ 的完整链路、`256 B` 物理对齐约束、Vector 单元写回机制，以及临时空间 `tmpBuffer` 的分配本质。
+
+#### 一、题目定义与内存规划
+
+##### （一）题目数据规格
+
+- **输入数据 `x`**：`8192` 个 `float32` 元素，数据大小为 $8192 \times 4\text{ B} = 32\text{ KB}$；每个元素范围为 $[-1.0, 1.0]$。
+- **输出数据 `y`**：`1` 个 `float32` 标量，数学数据大小为 `4 B`；物理写回与 DMA 搬运时需要按 `32 B` 对齐补齐。输出范围为 $[-8192, 8192]$。
+- **物理约束**：输入总大小为 `32 KB`，远小于 AI Core 常见的 `256 KB` 级 UB 容量，因此无需开启 Tile 循环。`32 KB = 128 \times 256\text{ B}`，天然满足 `256 B` 向量对齐要求。
+
+##### （二）UB 内存布局规划
+
+单个 AI Core 的 UB 需要为三块区域分配空间：
+
+| 缓冲区名称 | 元素数量 | 字节大小 | 物理用途 |
+| --- | --- | --- | --- |
+| `inQueueX` | `8192` 个 FP32 | `32768 B`（`32 KB`） | 存放从 GM 搬入的原始输入向量 `x`。 |
+| `outQueueY` | `8` 个 FP32，含 `7` 个 Padding | 最少 `32 B` | 存放最终归约标量；有效结果位于 `yLocal[0]`。 |
+| `tmpBuffer` | 动态查询 | 通常 `256 ~ 512 B` | 存放 API 在树状折叠阶段进行向量转置、混洗所需的临时数据。 |
+
+#### 二、片上全量归约 API：`WholeReduceSum`
+
+在 Ascend C 高阶 API 中，完成片上全量归约的核心工具是 `WholeReduceSum`。
+
+##### （一）树状折叠与 `tmpBuffer` 的物理本质
+
+上一节提到，Vector 单元在 `256 B`、即 `64` 个 FP32 元素的寄存器粒度上进行横向树状折叠。当处理的数据达到 `8192` 个元素，即 `128` 个 `256 B` 向量时，真实计算路径分为两级：
+
+- **纵向向量加法（Vector Sum）**：硬件驱动 Vector 单元，将 `128` 个 `256 B` 向量按列并行累加，在寄存器内部收敛为 `1` 个 `256 B` 的中间向量，也就是 `64` 个 FP32 元素。此阶段不消耗 UB 中的 `tmpBuffer`。
+- **横向树状折叠（Tree Reduction）**：对最后的 `256 B` 向量执行高低半区折叠。为了完成跨位置的转置、混洗操作，硬件需要将中间数据暂存到 UB 中。
+
+`tmpBuffer` 的本质是暂存最后 `1 ~ 2` 个 `256 B` 向量的转置中间态，因此需求极小且固定。对于 `32 KB` 输入，它通常只占 `256 ~ 512 B`，占 UB 容量的比例不足 `1.5%`。调用 `WholeReduceSum` 前，通过 `GetWholeReduceSumMinTmpSize` 查询最小需求并分配即可。
+
+##### （二）接口定义与参数约束
+
+```cpp
+template <typename T>
+__aicore__ inline void WholeReduceSum(
+    const LocalTensor<T>& dstLocal,
+    const LocalTensor<T>& srcLocal,
+    const LocalTensor<uint8_t>& sharedTmpBuffer,
+    const uint32_t calCount
+);
+```
+
+- **`dstLocal`**：输出 `LocalTensor`。物理空间至少开辟 `32 B`；FP32 情况下相当于 `8` 个元素，最终结果存于 `dstLocal[0]`。
+- **`srcLocal`**：输入 `LocalTensor`，首地址与长度均需满足 `32 B` 对齐。
+- **`sharedTmpBuffer`**：由 `GetWholeReduceSumMinTmpSize` 查询后开辟的临时空间。
+- **`calCount`**：参与归约的总元素数，例如本题的 `8192`。单次调用的 `calCount` 受 UB 容量限制，不能超过单 Tile 的最大承载量。
+
+#### 三、算法流程与代码实现（Ascend C）
+
+##### （一）完整计算流程
+
+- **Init 阶段**：配置 Global Memory 地址映射，初始化 UB 上的 Pipe 队列与 `tmpBuffer` 空间。
+- **Stage 1：DataCopy**：调用 `DataCopy`，将 `32 KB` 数据从 GM 一次性搬入 UB 的 `inQueueX`。
+- **Stage 2：Compute**：调用 `WholeReduceSum`，驱动 Vector 单元在 UB 内完成多级向量归约，并将结果写至 `outQueueY` 的 `index 0`。
+- **Stage 3：DataCopy**：将 `outQueueY` 中的标量结果按 `32 B` 对齐写回 GM 输出地址。
+
+##### （二）代码实现示例与内存机制详解
+
+```cpp
+#include "kernel_operator.h"
+
+using namespace AscendC;
+
+class KernelReduceSumEasy {
+public:
+    __aicore__ inline KernelReduceSumEasy() {}
+
+    __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, uint32_t totalLength)
+    {
+        this->totalLength = totalLength;
+
+        // 1. 获取 Global Memory 地址映射。
+        xGm.SetGlobalBuffer((__gm__ float*)x, this->totalLength);
+        yGm.SetGlobalBuffer((__gm__ float*)y, 1);
+
+        // 2. 初始化 Pipe 内存管道：8192 * sizeof(float) = 32768 B。
+        pipe.InitBuffer(inQueueX, 1, this->totalLength * sizeof(float));
+
+        // 归约结果虽只有一个 FP32，但物理上需要一个 32 B Block。
+        // yLocal[0] 保存有效结果，yLocal[1] 到 yLocal[7] 为 Padding。
+        pipe.InitBuffer(outQueueY, 1, 32);
+
+        // 3. 为 WholeReduceSum 查询并分配临时空间。
+        uint32_t tmpBytes = 0;
+        GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
+        pipe.InitBuffer(tmpBuffer, tmpBytes);
+    }
+
+    __aicore__ inline void Process()
+    {
+        // Stage 1: CopyIn - 从 GM 搬运 32 KB 输入到 UB。
+        LocalTensor<float> xLocal = inQueueX.AllocTensor<float>();
+        DataCopy(xLocal, xGm, this->totalLength);
+        inQueueX.EnQue(xLocal);
+
+        // Stage 2: Compute - 在 UB 内进行树状折叠归约。
+        LocalTensor<float> xCalc = inQueueX.DeQue<float>();
+        LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
+        LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+
+        WholeReduceSum(yLocal, xCalc, tmpTensor, this->totalLength);
+
+        outQueueY.EnQue(yLocal);
+        inQueueX.FreeTensor(xCalc);
+
+        // Stage 3: CopyOut - 按最小 32 B 粒度写回结果。
+        LocalTensor<float> yOut = outQueueY.DeQue<float>();
+        DataCopy(yGm, yOut, 8);
+        outQueueY.FreeTensor(yOut);
+    }
+
+private:
+    TPipe pipe;
+    TQue<QuePosition::VECIN, 1> inQueueX;
+    TQue<QuePosition::VECOUT, 1> outQueueY;
+    TBuf<TPosition::VECCALC> tmpBuffer;
+
+    GlobalTensor<float> xGm;
+    GlobalTensor<float> yGm;
+    uint32_t totalLength;
+};
+
+extern "C" __global__ __aicore__ void reduce_sum_easy(GM_ADDR x, GM_ADDR y)
+{
+    KernelReduceSumEasy op;
+    op.Init(x, y, 8192);
+    op.Process();
+}
+```
+
+`AllocTensor<float>()` 本身不指定大小。它借用的是 `InitBuffer` 阶段为对应队列划分的空间：本例的 `outQueueY` 已被分配 `32 B`，因此得到的 `yLocal` 可以被解释为 `8` 个 FP32 元素组成的 `LocalTensor<float>`，而有效归约值只位于 `yLocal[0]`。
+
+#### 四、深度避坑指南：内存单位与硬件级物理约束
+
+##### （一）`InitBuffer` 的单位是字节
+
+`pipe.InitBuffer(outQueueY, 1, 32)` 的第三个参数是字节数，不是元素数。填写 `4` 只会分配 `4 B`，即一个 FP32 的空间；而 Vector 单元写入结果时会以一个 `32 B` Block 刷新，后续 `28 B` 会覆盖邻近 Tensor，造成内存污染。
+
+正确填写 `32` 后，UB 中实际有 `8` 个 FP32 元素的空间：`yLocal[0]` 到 `yLocal[7]`。后续 `DataCopy` 将这 `8` 个元素按 `32 B` 对齐粒度写回 GM。
+
+##### （二）`tmpBuffer` 必须独立分配
+
+如果没有分配 `tmpBuffer`，或者让它与 `inQueueX`、`outQueueY` 共享未隔离的片上空间，硬件在横向树状折叠与向量转置时就可能覆盖输入或输出数据，导致归约结果出现随机错误。
+
+必须通过 `TPipe::InitBuffer` 单独开辟 `TBuf<TPosition::VECCALC>` 空间，保证 API 内部临时计算数据与输入、输出 Buffer 的物理隔离。
