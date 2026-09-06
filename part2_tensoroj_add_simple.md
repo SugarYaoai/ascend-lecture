@@ -35,29 +35,6 @@ extern "C" void run_kernel(
 }
 ```
 
-#### 1.3.5 本节自测
-
-**1.3-Q1.** C API 的题目入口传入 `GM_ADDR` 后，为什么要转换为 `__gm__ float*`？
-
-- A. 让指针偏移按 `float32` 元素而不是字节计算。
-- B. 自动把 GM 数据复制到 UB。
-- C. 将数据类型从 `float32` 改为 `float16`。
-- D. 使 Host 可以直接访问 UB。
-
-**1.3-Q2.** 下列关于 C API 长度参数的说法，哪项正确？
-
-- A. `asc_copy_gm2ub` 与 `asc_add` 都使用字节数。
-- B. `asc_copy_gm2ub` 使用字节数，`asc_add` 使用元素个数。
-- C. `asc_copy_gm2ub` 使用元素个数，`asc_add` 使用字节数。
-- D. 两个接口都不需要长度参数。
-
-**1.3-Q3.** Add Simple 采用 `16` 个 Block 而不是 `8` 个 Block 的主要原因是：
-
-- A. `16` 是 Vector 指令的固定宽度。
-- B. `8` 个 Block 时每个 Block 的三段 UB 工作区会接近 UB 容量上限。
-- C. `8` 个 Block 无法启动 Kernel。
-- D. `16` 个 Block 可以省去 `block_idx`。
-
 后续先完成 `add_custom` 的 Device 端实现，再回到 `run_kernel`，利用模板传入的参数完成检查与启动。入口处的各个参数会在真正使用时逐一拆解。
 
 #### 1.3.2 `add_custom` Kernel 算子实现
@@ -250,3 +227,26 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
+
+#### 1.3.5 本节自测
+
+**1.3-Q1.** C API 的题目入口传入 `GM_ADDR` 后，为什么要转换为 `__gm__ float*`？
+
+- A. 让指针偏移按 `float32` 元素而不是字节计算。
+- B. 自动把 GM 数据复制到 UB。
+- C. 将数据类型从 `float32` 改为 `float16`。
+- D. 使 Host 可以直接访问 UB。
+
+**1.3-Q2.** 下列关于 C API 长度参数的说法，哪项正确？
+
+- A. `asc_copy_gm2ub` 与 `asc_add` 都使用字节数。
+- B. `asc_copy_gm2ub` 使用字节数，`asc_add` 使用元素个数。
+- C. `asc_copy_gm2ub` 使用元素个数，`asc_add` 使用字节数。
+- D. 两个接口都不需要长度参数。
+
+**1.3-Q3.** Add Simple 采用 `16` 个 Block 而不是 `8` 个 Block 的主要原因是：
+
+- A. `16` 是 Vector 指令的固定宽度。
+- B. `8` 个 Block 时每个 Block 的三段 UB 工作区会接近 UB 容量上限。
+- C. `8` 个 Block 无法启动 Kernel。
+- D. `16` 个 Block 可以省去 `block_idx`。
