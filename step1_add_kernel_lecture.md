@@ -304,3 +304,26 @@ cmake ..
 make -j
 ./add_172032
 ```
+
+#### 1.2.6 本节自测
+
+**1.2-Q1.** 长度为 `172032` 的输入由 `16` 个 Block 均分时，每个 Block 处理多少个元素？
+
+- A. `8192`
+- B. `10752`
+- C. `16384`
+- D. `172032`
+
+**1.2-Q2.** 一个 Add Block 在设备侧完成计算的正确数据路径是：
+
+- A. Host Memory -> Vector -> GM
+- B. GM -> Vector -> Host Memory
+- C. GM -> UB -> Vector 计算 -> UB -> GM
+- D. UB -> Host Memory -> GM
+
+**1.2-Q3.** `add_custom<<<NUM_BLOCKS, nullptr, stream>>>(...)` 中的 `NUM_BLOCKS` 决定的是：
+
+- A. 单个 Block 的 UB 容量。
+- B. Kernel 提交的逻辑 Block 数量。
+- C. 单条 Vector 指令处理的元素数。
+- D. Host 端的线程数量。

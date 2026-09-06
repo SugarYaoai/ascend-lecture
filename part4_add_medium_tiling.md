@@ -101,6 +101,29 @@ __vector__ __global__ void add_custom(GM_ADDR x, GM_ADDR y, GM_ADDR z)
 }
 ```
 
+#### 1.5.6 本节自测
+
+**1.5-Q1.** Add Medium 中，Block 切分与 Tile 切分分别解决什么问题？
+
+- A. Block 解决单核 UB 容量；Tile 解决多核任务分工。
+- B. Block 解决多核任务分工；Tile 解决单核内分批处理。
+- C. 二者都只用于决定 Host 端内存大小。
+- D. 二者都只用于增加 Vector 指令宽度。
+
+**1.5-Q2.** 当 `BLOCK_LENGTH = 65536`、`TILE_LENGTH = 8192` 时，一个 Block 需要执行多少次 Tile 循环？
+
+- A. `2`
+- B. `4`
+- C. `8`
+- D. `16`
+
+**1.5-Q3.** 单缓冲 Tile 循环中，不能同时计算 Tile `i` 并搬入 Tile `i+1` 的直接原因是：
+
+- A. `block_idx` 不能在循环中使用。
+- B. GM 无法保存多个 Tile。
+- C. 两个 Tile 会争用同一组 UB 缓冲区，造成覆盖与脏读。
+- D. Vector 单元不能执行 Add。
+
 以 Block `0` 为例，它负责区间 `[0, 65536)`；循环会依次处理 `Tile 0: [0, 8192)`、`Tile 1: [8192, 16384)` 直到 `Tile 7: [57344, 65536)`。每轮都经历同一条数据路径：GM 搬入 UB，在 UB 中相加，再将结果写回 GM。
 
 #### 1.5.4 串行 Tile 循环中的硬件等待

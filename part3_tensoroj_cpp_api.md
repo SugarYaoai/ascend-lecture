@@ -204,3 +204,26 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<BLOCK_LENGTH><<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
+
+#### 1.4.4 本节自测
+
+**1.4-Q1.** `GlobalTensor<float>::SetGlobalBuffer(...)` 的作用是：
+
+- A. 立即将 GM 数据搬入 UB。
+- B. 创建当前 Block 的带类型 GM 地址范围视图。
+- C. 在 Host Memory 中申请输入张量。
+- D. 启动一个新的 AI Core。
+
+**1.4-Q2.** 为什么 `blockLength` 被用作 C++ Kernel 的模板参数？
+
+- A. 因为 `Alloc<float, blockLength>()` 需要在编译时知道 UB 分配长度。
+- B. 因为只有模板参数才能传给 Host。
+- C. 因为模板参数可以绕过 UB 容量限制。
+- D. 因为 `block_idx` 只能在模板中使用。
+
+**1.4-Q3.** C++ API 中 `DataCopy(xLocal, xGm, blockLength)` 的 `blockLength` 表示：
+
+- A. 字节数。
+- B. `float32` 元素个数。
+- C. AI Core 个数。
+- D. 队列深度。

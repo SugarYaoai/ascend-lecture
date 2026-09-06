@@ -301,3 +301,26 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
     add_custom<<<NUM_BLOCKS, nullptr, stream>>>(x, y, z);
 }
 ```
+
+#### 1.6.6 本节自测
+
+**1.6-Q1.** Add Medium 的双缓冲流水线中，MTE2、Vector 与 MTE3 分别负责：
+
+- A. GM 搬入 UB、UB 内计算、UB 写回 GM。
+- B. Host 分配内存、GM 复制、Kernel 启动。
+- C. 标量计算、矩阵计算、向量计算。
+- D. 输入校验、结果校验、性能分析。
+
+**1.6-Q2.** `TQue<QuePosition::VECIN, 2>` 中的 `2` 表示：
+
+- A. 每个 Tile 有两个输入元素。
+- B. 队列拥有两块可交替使用的片上缓冲区。
+- C. Kernel 只能启动两个 Block。
+- D. Vector 单元同时执行两条 Add 指令。
+
+**1.6-Q3.** 在稳定重叠阶段，`Compute-Tile1` 与 `CopyIn-Tile2` 能够同时进行的前提是：
+
+- A. Tile1 与 Tile2 使用同一块 UB 缓冲区。
+- B. Host 端为每个 Tile 创建一个 Stream。
+- C. 双缓冲为相邻 Tile 提供物理隔离的 UB 工作区。
+- D. MTE2 等待 Vector 完成计算后再搬运。
