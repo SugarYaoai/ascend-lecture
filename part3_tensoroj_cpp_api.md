@@ -227,3 +227,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 - B. `float32` 元素个数。
 - C. AI Core 个数。
 - D. 队列深度。
+
+#### 1.4.5 实践作业
+
+使用本节的 C++ API 实现完成 `kernel.asc`，并提交至 [TensorOJ Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。以题目评测通过作为本节实践作业的完成标准。

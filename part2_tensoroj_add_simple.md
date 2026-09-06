@@ -250,3 +250,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 - B. `8` 个 Block 时每个 Block 的三段 UB 工作区会接近 UB 容量上限。
 - C. `8` 个 Block 无法启动 Kernel。
 - D. `16` 个 Block 可以省去 `block_idx`。
+
+#### 1.3.6 实践作业
+
+完成本节代码后，将 `kernel.asc` 提交至 [TensorOJ Add Simple](https://cannjudge.cn/pku-tensor/education/add-simple/submit)。以题目评测通过作为本节实践作业的完成标准。

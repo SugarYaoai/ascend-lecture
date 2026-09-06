@@ -211,3 +211,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 - B. GM 无法保存多个 Tile。
 - C. 两个 Tile 会争用同一组 UB 缓冲区，造成覆盖与脏读。
 - D. Vector 单元不能执行 Add。
+
+#### 1.5.7 实践作业
+
+完成单缓冲 Tile 循环的 `kernel.asc`，并提交至 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)。以题目评测通过作为本节实践作业的完成标准。

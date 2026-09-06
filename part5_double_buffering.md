@@ -324,3 +324,7 @@ extern "C" void run_kernel(GM_ADDR x, const TensorGroupInfo& info_x,
 - B. Host 端为每个 Tile 创建一个 Stream。
 - C. 双缓冲为相邻 Tile 提供物理隔离的 UB 工作区。
 - D. MTE2 等待 Vector 完成计算后再搬运。
+
+#### 1.6.7 实践作业
+
+将本节双缓冲实现整理为完整的 `kernel.asc`，提交至 [TensorOJ Add Medium](https://tensoroj.cn/cann/pku-tensor/education/add-medium)。以题目评测通过作为本节实践作业的完成标准，并记录提交结果与耗时，便于与单缓冲版本比较。
