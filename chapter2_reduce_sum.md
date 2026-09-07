@@ -69,7 +69,7 @@ $$
 - **学习重点**：基于 `block_idx` 的跨核数据切分、多核写同一输出地址时的竞争问题，以及硬件 Atomic Add 的使用。
 - **延伸问题**：比较 Atomic 规约与 Two-Stage 规约。后者通过 WorkSpace 保存各 Core 局部和，再进行第二次归约，以降低原子写带来的开销。
 
-### 2.2 Easy 关卡：单核单 Tile 的片上归约实现
+### 2.2 Easy 关卡：单核单 Tile 的全量片上加载与指令调用
 
 #### 2.2.1 题目规格
 
@@ -77,7 +77,7 @@ $$
 - **输出数据 `y`**：`1` 个 `float32` 标量，形状为 `(1,)`。
 - **计算约束**：单个 AI Core 执行，数据量可以一次性完整加载至 UB 空间。
 
-#### 2.2.2 算法逻辑与硬件执行模式
+#### 2.2.2 算法本质与编程范式转变
 
 ##### 2.2.2.1 算法本质
 
@@ -94,13 +94,13 @@ float ReduceSum_CPU(const float* xCalc, int N) {
 }
 ```
 
-##### 2.2.2.2 NPU 架构下的硬件差异
+##### 2.2.2.2 CPU 传统编程与 NPU 算子编程的范式转变
 
-上述逐元素循环累加的逻辑无法直接移植到 Ascend C Kernel 中，原因在于 AI Core 的底层硬件设计存在以下约束：
+上述 C++ 逐元素循环累加的逻辑无法直接移植到 Ascend C Kernel 中。在传统 CPU 上，开发者习惯于“以标量为中心、以 CPU 寄存器为中转”的命令式思维；而在 NPU 架构下，必须建立“以矢量为中心、以数据流为驱动”的算子编程范式。这种思维转变源于底层硬件的三个核心差异：
 
-- **计算单元与数据通路约束**：AI Core 内部分为 Vector 单元和 Scalar 单元。UB 属于 Vector 数据通路，底层不提供将 UB 中元素逐个提取到标量寄存器进行低延时累加的通路；强行使用 C++ 循环逐个读取，会导致流水线严重停顿。
-- **计算并行度约束**：Vector 单元单次指令可并行处理 `256 B` 数据，即 `64` 个 `float32`。串行 `for` 循环无法发挥 Vector 单元的并行吞吐能力。
-- **`32 B` 对齐约束**：标准 C++ 中 `float` 标量仅占 `4 B`。但在 NPU 中，Vector 单元的读写计算以及 MTE 的数据搬运，物理最小单位均为 `32 B` 数据块，即 `8` 个 `float32`。即便逻辑上只需输出一个标量，在片上开辟空间及写回 GM 时，也必须申请并按 `32 B` 对齐处理；后 `7` 个位置作为 Padding 忽略。
+- **计算单元与数据通路的分离**：AI Core 内部分为 Vector 单元与 Scalar 单元。UB 属于矢量计算通路，底层并不存在将 UB 内存中的元素逐个提取到标量寄存器进行低延时累加的高速通道。强行使用 C++ 循环逐个读取，会导致数据在标量与矢量通路间频繁跨区传送，引发硬件流水线严重停顿。
+- **硬件算力的并行度要求**：Vector 单元单次指令的物理吞吐能力为 `256 B`，可一次性处理 `64` 个 `float32` 元素。采用串行 `for` 循环逐个计算，会浪费矢量计算单元的并行吞吐能力。
+- **物理数据块的 `32 B` 粒度限制**：标准 C++ 中 `float` 标量仅占 `4 B`。但在 NPU 中，Vector 单元的读写计算以及 MTE 引擎的数据搬运，物理最小单位均为 `32 B` 数据块，即 `8` 个 `float32`。即便逻辑上只需输出 `1` 个标量，在片上开辟空间及写回 GM 时，也必须按 `32 B` 对齐处理，后 `7` 个位置作为 Padding 自动忽略。
 
 #### 2.2.3 本节核心 API：片上规约 `WholeReduceSum`
 
@@ -120,7 +120,7 @@ __aicore__ inline void WholeReduceSum(
 
 ##### 2.2.3.2 硬件辅助空间 `sharedTmpBuffer`
 
-`WholeReduceSum` 执行时需要在 UB 中进行多轮树状折叠与转置，必须依赖额外的片上辅助空间暂存中间计算结果。
+`WholeReduceSum` 执行时需要在 UB 中进行多轮树状折叠与转置，必须依赖额外的片上辅助空间（Scratchpad Memory）暂存中间计算结果。
 
 - **为什么使用 `uint8_t`**：该缓冲区只供硬件指令读写中间结果，不承载特定业务数据类型。配套查询 API `GetWholeReduceSumMinTmpSize` 返回的长度单位直接为字节，以 `uint8_t` 作为 Tensor 元素类型可以按 `1:1` 的字节数申请空间，避免跨类型换算与对齐逻辑。
 - **如何确定空间大小**：辅助空间大小取决于输入数据类型、输入和输出 Tensor 的形状及对齐状态，不能自行硬编码。必须在 `Init` 阶段动态查询：
@@ -139,7 +139,7 @@ pipe.InitBuffer(tmpBuffer, tmpBytes);
 `yLocal` 逻辑上只保存一个 FP32 标量，但在 UB 中需要分配 `32 B`，即 `8` 个 `float32` 元素：
 
 ```cpp
-// Init 阶段：逻辑输出为 1 个 FP32，但物理上开辟 32 B，即 8 个 FP32。
+// Init 阶段：逻辑输出为 1 个 FP32（4 B），但物理上开辟 32 B，即 8 个 FP32。
 pipe.InitBuffer(outQueueY, 1, 32);
 
 // Compute 阶段：yLocal 实际包含 8 个 float32 元素。
@@ -147,7 +147,7 @@ LocalTensor<float> xCalc = inQueueX.DeQue<float>();
 LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
 LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
 
-// 有效结果写入 yLocal[0]；yLocal[1] 到 yLocal[7] 为 Padding。
+// 规约结果写入 yLocal[0]；yLocal[1] 到 yLocal[7] 为 Padding。
 WholeReduceSum(yLocal, xCalc, tmpTensor, 8192);
 
 outQueueY.EnQue(yLocal);
@@ -177,7 +177,8 @@ public:
         // 2. 初始化数据队列
         pipe.InitBuffer(inQueueX, 1, this->totalLength * sizeof(float)); // 32 KB
 
-        // 逻辑输出为 1 个 FP32，但受 32 B 对齐限制，必须分配 8 个 FP32 的物理空间。
+        // yLocal 逻辑输出为 1 个 FP32（4 B），但受 32 B 对齐限制，
+        // 必须通过 outQueueY 开辟 32 B 物理空间，即 8 个 FP32。
         pipe.InitBuffer(outQueueY, 1, 32);
 
         // 3. 先初始化队列，再动态查询并分配 WholeReduceSum 所需临时空间。
@@ -194,6 +195,8 @@ public:
 
         // Stage 2: Compute - 调用 WholeReduceSum 完成片上树状规约
         LocalTensor<float> xCalc = inQueueX.DeQue<float>();
+
+        // yLocal 实际包含 8 个 FP32（32 B），规约结果写入 yLocal[0]。
         LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
         LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
 
@@ -202,7 +205,8 @@ public:
         outQueueY.EnQue(yLocal);
         inQueueX.FreeTensor(xCalc);
 
-        // Stage 3: CopyOut - 按 32 B 对齐写回 GM
+        // Stage 3: CopyOut - MTE 按 32 B 对齐搬运 8 个 FP32 写回 GM。
+        // GM 端只取 yGm[0] 作为标量结果。
         LocalTensor<float> yOutput = outQueueY.DeQue<float>();
         DataCopy(yGm, yOutput, 8);
         outQueueY.FreeTensor(yOutput);
