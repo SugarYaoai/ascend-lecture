@@ -241,87 +241,80 @@ extern "C" __global__ __aicore__ void reduce_sum_easy(GM_ADDR x, GM_ADDR y) {
 - **输入数据 `x`**：$2^6 \times 8192 = 64 \times 8192 = 524288$ 个 `float32` 元素，共 `2 MB`，形状为 `(524288,)`。
 - **输出数据 `y`**：`1` 个 `float32` 标量，形状为 `(1,)`。
 - **计算约束**：仍由单个 AI Core 完成全量数据的规约累加。
-- **物理限制**：单 Core 的片上 UB 无法一次性装下 `2 MB` 数据，必须拆分为 $2^6 = 64$ 个 Tile；每个 Tile 包含 `8192` 个元素，占用 `32 KB`，分批处理。
+- **物理限制**：单 Core 的 UB 空间无法一次性装下 `2 MB` 数据，必须拆分为 `64` 个 Tile；每个 Tile 包含 `8192` 个元素，占用 `32 KB`，通过单核循环分批加载与片上累加完成处理。
 
-#### 2.3.2 从 CPU 累加器到 UB 局部累加器
+#### 2.3.2 算法本质与编程范式转变
 
-从单 Tile 的 Easy 关卡演进到单核多 Tile 的 Medium 关卡，核心难点在于如何跨循环维护片上累加状态。在 CPU 编程中，维护一个全局累加和是再自然不过的事情：
+Easy 关卡中，数据量可以一次性装入 UB，计算链路为“加载 $\rightarrow$ 片上规约 $\rightarrow$ 写回”。Medium 关卡面对超出 UB 容量的数据，必须引入 Tile 循环。
+
+##### 2.3.2.1 算法本质
+
+跨 Tile 的 Reduce 算子本质是“局部规约 + 跨 Tile 累加”。若不考虑硬件加速，在标准 CPU 编程中维护全局累加和可以写为：
 
 ```cpp
-// CPU 传统思路：定义标量 -> 清零 -> 循环累加 -> 写回
+// CPU 串行求和：跨 Tile 累加（逻辑示意）
 float sumLocal = 0.0f;
-for (int i = 0; i < 64; ++i) {
-    sumLocal += yLocal[0];
+for (int i = 0; i < tileNum; ++i) {
+    sumLocal += yLocal[i]; // 逐 Tile 累加
 }
 yGm[0] = sumLocal;
 ```
 
-但在 NPU 的 Ascend C 开发中，完全套用上述 C++ 习惯写出的代码，在硬件层面并不成立。
+##### 2.3.2.2 CPU 传统编程与 NPU 算子编程的范式转变
 
-##### 2.3.2.1 错误示范：直接套用 CPU 标量累加
+在 Ascend C 算子开发中，完全套用上述 C++ 习惯写出的代码在 NPU 硬件底层无法成立：
 
 ```cpp
-// 错误示范：直接套用 C++ 习惯写法
-float sumLocal = 0.0f; // 1. 试图用 C++ 标量声明并赋值清零
-
-for (uint32_t i = 0; i < 64; ++i) {
+// 错误示范：试图在 Vector Kernel 中混用 CPU 标量逻辑
+float sumLocal = 0.0f;
+for (uint32_t i = 0; i < tileNum; ++i) {
     // ... 搬运并规约出当前 Tile 的标量 yLocal[0] ...
-    sumLocal += yLocal[0]; // 2. 试图用 C++ 标量加法进行片上累加
+    sumLocal += yLocal[0]; // 错误：试图在 Scalar 与 UB 矢量数据通道间低效通信
 }
-
-yGm[0] = sumLocal; // 3. 试图用 C++ 指针写回 GM
+yGm[0] = sumLocal; // 错误：不能直接用 C++ 指针赋值写回 GM
 ```
 
-##### 2.3.2.2 CPU 惯性思维在 NPU 上的四个问题
+这种范式转变源于底层硬件架构的三项硬性约束：
 
-**问题一：用 `float sumLocal` 存储累加值。** C++ 声明的标量由 Scalar 寄存器保存，不在 UB 片上 SRAM 中。`WholeReduceSum` 的输出位于 UB，Scalar 寄存器不能直接参与 Vector 单元的高速计算。局部累加器必须显式分配在 UB 中，并满足 `32 B` 对齐：
+- **存储位置限制**：C++ 声明的 `float sumLocal` 会分配在 Scalar 寄存器中，而 `WholeReduceSum` 的结果存放在 UB 的 Vector 通道中。由于硬件不支持 Scalar 寄存器与 UB 之间的高吞吐、低延时频繁交互，累加器必须显式分配在 UB 中。
+- **初始化方式限制**：UB 属于片上 SRAM，分配后可能残留脏数据。不能使用 C++ 赋值语句清零，必须调用 Vector 单元的 `Duplicate` 指令对 UB 累加空间进行矢量化清零初始化。
+- **计算指令限制**：不能使用 C++ 标量加法，必须调用 Vector 单元的 `Add` 指令，在 UB 内对累加器进行原址更新。
+
+#### 2.3.3 本节核心设计：片上累加器与流水线编排
+
+##### 2.3.3.1 片上累加器 `sumBuf` 的声明与初始化
+
+累加器需要在整个 Tile 循环生命周期内持续存在，且不参与 Queue 的入队、出队流水调度，因此应使用 `TBuf` 而不是 `TQue` 管理其片上内存：
 
 ```cpp
-pipe.InitBuffer(sumBuf, 1, 32); // 申请 32 B 对齐空间
+// Init 阶段：开辟 32 B 物理空间作为片上累加器 Buffer
+pipe.InitBuffer(sumBuf, 1, 32);
+
+// Process 阶段：获取 LocalTensor 并调用 Duplicate 指令清零，填充 8 个 FP32
+LocalTensor<float> sumLocal = sumBuf.Get<float>();
+Duplicate(sumLocal, 0.0f, 8);
 ```
 
-**问题二：用 C++ 赋值语句清零。** 新分配的 UB 空间可能保留上一轮计算的脏数据，不能用 `sumLocal = 0.0f` 对其初始化。应调用 Vector 单元的 `Duplicate` 指令完成片上填充：
+##### 2.3.3.2 矢量加法 `Add` 与原址累加
+
+循环内部通过 `Add` 合并当前 Tile 的规约结果与全局累加器：
 
 ```cpp
-Duplicate(sumLocal, 0.0f, 8); // 矢量引擎清零 32 B，即 8 个 FP32
+// sumLocal (dst) = sumLocal (src0) + yLocal (src1)
+// 计算 8 个 FP32，满足 32 B 矢量指令对齐要求
+Add(sumLocal, sumLocal, yLocal, 8);
 ```
 
-**问题三：用 C++ 标量加法累加。** `sumLocal += yLocal[0]` 会试图在 Scalar 与 UB/Vector 数据通路之间往返，带来同步开销与指令阻塞。应由 Vector 原生加法指令在 UB 中原址更新累加器：
+Vector 单元执行 `Add` 时，会先将 `sumLocal` 和 `yLocal` 读入矢量计算寄存器完成加法，再将结果写回 `sumLocal` 的 UB 地址，因此同地址读写不会发生数据竞争或覆盖错误。
 
-```cpp
-Add(sumLocal, sumLocal, yLocal, 8); // Vector 单元原址累加
-```
+##### 2.3.3.3 队列深度与 Ping-Pong 双缓冲
 
-**问题四：用 C++ 指针赋值写回 GM。** MTE 搬运要求源数据为 `LocalTensor`，且搬运基本单位满足 `32 B` 对齐。即使最终只需要一个 `float32` 结果，也需要以 `8` 个 FP32 的 `32 B` Block 发起搬运：
+为掩盖 MTE 从 GM 搬运数据到 UB 的长延时，输入队列 `inQueueX` 采用深度为 `2` 的双缓冲策略：
 
-```cpp
-DataCopy(yGm, sumLocal, 8); // 搬运 8 个 FP32，即 32 B
-```
+- **`inQueueX`，Depth = 2**：用于让 Tile $i+1$ 的 CopyIn 搬运与 Tile $i$ 的 Compute 重叠执行。
+- **`outQueueY`，Depth = 1**：仅作为当前 Tile 执行 `WholeReduceSum` 的临时输出中转区。每个 Tile 计算完成后立即被 `Add` 消费并释放，深度为 `1` 即可满足需求。
 
-#### 2.3.3 CPU 与 Ascend C 的片上累加对照
-
-| 维度 | CPU / C++ 惯用思维 | Ascend C 的正确做法 | 硬件原因 |
-| --- | --- | --- | --- |
-| 内存开辟 | `float sumLocal;` | `pipe.InitBuffer(sumBuf, 1, 32);` | 片上累加器必须位于 UB，且满足 `32 B` 对齐。 |
-| 清零初始化 | `sumLocal = 0.0f;` | `Duplicate(sumLocal, 0.0f, 8);` | SRAM 可能残留脏数据，需要由 Vector 单元完成清零。 |
-| 片上累加 | `sumLocal += yLocal[0];` | `Add(sumLocal, sumLocal, yLocal, 8);` | 由 Vector 指令在 UB 内原址更新。 |
-| 写回 GM | `yGm[0] = sumLocal;` | `DataCopy(yGm, sumLocal, 8);` | MTE 写回需要满足 `32 B` 对齐。 |
-
-#### 2.3.4 两个关键的缓冲区设计问题
-
-##### 2.3.4.1 为什么 `inQueueX` 使用双缓冲，而 `outQueueY` 只需要深度 1
-
-双缓冲的价值在于掩盖 GM 到 UB 的长延时 DMA 搬运。`inQueueX` 每轮需要从 GM 搬入 `32 KB` 数据，深度为 `2` 时可以让下一 Tile 的搬入与当前 Tile 的计算重叠。
-
-`outQueueY` 承载的只是当前 Tile 规约得到的一个 `float32` 标量，物理上按 `32 B` 对齐。它在当前轮被 `Add` 立即消费并释放，任意时刻最多只保留一个 Tensor，因此深度 `1` 已经足够；设置为 `2` 只会额外占用 UB。
-
-##### 2.3.4.2 `Add(sumLocal, sumLocal, yLocal, 8)` 是否会破坏输入
-
-`Add` 支持原址操作。Vector 单元会先读取 `sumLocal` 和 `yLocal` 的数据至计算寄存器，完成加法后才将结果写回 `sumLocal` 的 UB 地址，因此不会发生读写覆盖。
-
-同一 AI Core 的 Vector 队列按顺序执行，第 `i` 轮 Tile 的累加与第 `i+1` 轮 Tile 的累加不会并发访问同一个 `sumLocal`。将同一个 `LocalTensor` 同时作为源和目的，是维护片上累加状态的标准写法。
-
-#### 2.3.5 完整代码实现
+#### 2.3.4 Medium 关卡完整 Kernel 实现
 
 ```cpp
 #include "kernel_operator.h"
@@ -335,36 +328,36 @@ public:
     __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, uint32_t totalLength) {
         this->totalLength = totalLength; // 524288 (64 * 8192)
         this->tileLength = 8192;         // 单 Tile 元素个数 (32 KB)
-        this->tileNum = 64;              // 2^6 = 64 次循环
+        this->tileNum = 64;              // 循环次数 64
 
         // 1. 全局内存（GM）映射
         xGm.SetGlobalBuffer((__gm__ float*)x, this->totalLength);
         yGm.SetGlobalBuffer((__gm__ float*)y, 1);
 
-        // 2. 初始化内存管道（TPipe）
-        // inQueueX: Ping-Pong 双缓冲，掩盖从 GM 到 UB 的长延时 DMA 搬运
+        // 2. 初始化片上内存管道（TPipe）
+        // inQueueX 设为 2 级深度（Ping-Pong 双缓冲），掩盖从 GM 到 UB 的搬运延时
         pipe.InitBuffer(inQueueX, 2, this->tileLength * sizeof(float));
 
-        // outQueueY: 单 Tile 规约临时输出区，深度为 1 即可
+        // outQueueY 为单 Tile 规约临时输出，深度为 1，满足 32 B 对齐
         pipe.InitBuffer(outQueueY, 1, 32);
 
-        // 用 UB 内存保存局部累加器，强制 32 B 物理 Block 对齐
+        // 声明 UB 局部累加器 Buffer，按 32 B（8 个 FP32）对齐
         pipe.InitBuffer(sumBuf, 1, 32);
 
-        // 3. 动态查询并分配 WholeReduceSum 内部所需的临时空间
+        // 3. 先初始化队列，再动态查询 WholeReduceSum 所需辅助空间大小并初始化 TBuf
         uint32_t tmpBytes = 0;
         GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
         pipe.InitBuffer(tmpBuffer, tmpBytes);
     }
 
     __aicore__ inline void Process() {
-        // Vector 指令清零 UB 累加器，填充 32 B（8 个 FP32）
+        // 使用 Vector 单元清零片上累加器 sumLocal，填充 8 个 FP32
         LocalTensor<float> sumLocal = sumBuf.Get<float>();
         Duplicate(sumLocal, 0.0f, 8);
 
-        // 64 次 Tile 循环：规约当前 Tile，再累加到 sumLocal
+        // 64 次 Tile 循环：分批搬运、规约并累加
         for (uint32_t i = 0; i < this->tileNum; ++i) {
-            // Stage 1: CopyIn - 根据动态偏移量从 GM 搬运 32 KB 数据进 UB
+            // Stage 1: CopyIn - 按 Tile 偏移量将 32 KB 数据搬入 UB
             LocalTensor<float> xLocal = inQueueX.AllocTensor<float>();
             DataCopy(xLocal, xGm[i * this->tileLength], this->tileLength);
             inQueueX.EnQue(xLocal);
@@ -374,26 +367,26 @@ public:
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
             LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
 
-            // 当前 Tile 的 8192 个 FP32 规约为 yLocal[0]
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]
             WholeReduceSum(yLocal, xCalc, tmpTensor, this->tileLength);
 
-            // 在 Vector 单元中原址累加当前 Tile 的局部和
+            // 在 UB 内将当前 Tile 规约结果原址累加至 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
 
             outQueueY.FreeTensor(yLocal);
             inQueueX.FreeTensor(xCalc);
         }
 
-        // Stage 3: CopyOut - 所有 Tile 累加完成后按 32 B 粒度写回 GM
+        // Stage 3: CopyOut - 循环结束后，按 32 B 粒度将最终累加和写回 GM
         DataCopy(yGm, sumLocal, 8);
     }
 
 private:
     TPipe pipe;
-    TQue<QuePosition::VECIN, 2> inQueueX; // 乒乓队列，深度为 2
+    TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
     TQue<QuePosition::VECOUT, 1> outQueueY;
-    TBuf<TPosition::VECCALC> sumBuf;       // 片上局部累加器
-    TBuf<TPosition::VECCALC> tmpBuffer;    // WholeReduceSum 专用辅助临时空间
+    TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
+    TBuf<TPosition::VECCALC> tmpBuffer;   // WholeReduceSum 辅助临时空间
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -410,6 +403,6 @@ extern "C" __global__ __aicore__ void reduce_sum_medium(GM_ADDR x, GM_ADDR y) {
 }
 ```
 
-#### 2.3.6 实践作业
+#### 2.3.5 实践作业
 
 将上述实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Medium 题目。以题目评测通过作为本节实践作业的完成标准；同时记录 Tile 循环次数、UB 占用与提交耗时。
