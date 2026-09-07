@@ -406,3 +406,195 @@ extern "C" __global__ __aicore__ void reduce_sum_medium(GM_ADDR x, GM_ADDR y) {
 #### 2.3.5 实践作业
 
 将上述实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Medium 题目。以题目评测通过作为本节实践作业的完成标准；同时记录 Tile 循环次数、UB 占用与提交耗时。
+### 2.4 Hard 关卡：多 Core 协同与跨核归约
+
+#### 2.4.1 题目规格
+
+- **输入数据 `x`**：$32 \times 524288 = 16777216$ 个 `float32` 元素，共 `64 MB`，形状为 `(16777216,)`。
+- **输出数据 `y`**：`1` 个 `float32` 标量，形状为 `(1,)`。
+- **计算约束**：分配至 `32` 个 AI Core 并行处理全量数据。
+- **物理限制**：数据量极大，必须通过 Block 网格将计算任务均匀分发给 `32` 个 AI Core。各 Core 独立完成核内 Tile 循环规约后，还需要将各自的局部和合并写回 GM。
+
+#### 2.4.2 算法本质与编程范式转变
+
+##### 2.4.2.1 算法本质
+
+多核场景下，Reduce 算子的本质是“核内局部规约 + 跨核全局合并”。若不考虑硬件加速，在标准 CPU 多线程编程中，跨线程汇总通常写为：
+
+```cpp
+// CPU 多线程求和：跨线程原子加（逻辑示意）
+float coreLocalSum = ComputeCoreSum(thread_id);
+
+#pragma omp atomic
+yGm[0] += coreLocalSum;
+```
+
+##### 2.4.2.2 CPU 传统编程与 NPU 算子编程的范式转变
+
+在 Ascend C 算子开发中，完全套用上述 C++ 习惯写出的代码在 NPU 硬件底层无法成立：
+
+```cpp
+// 错误示范：试图在 NPU Kernel 中使用 CPU 原子加操作
+float coreLocalSum = ProcessCore();
+
+// 错误：yGm 是 GlobalTensor，不能直接使用 C++ += 运算符
+yGm[0] += coreLocalSum;
+```
+
+这种范式转变源于底层硬件架构的三项硬性约束：
+
+- **跨核内存竞争**：`32` 个 AI Core 是独立的硬件计算单元，并发访问同一个 GM 地址 `yGm[0]` 会引发写后写与读后写冲突。
+- **硬件级原子操作支持**：跨 Core 的同步不能依赖 Scalar 标量写回，必须通过 MTE 搬运引擎底层的 GM 原子加硬件指令完成。
+- **搬运与计算绑定**：NPU 不支持单独对 GM 发起标量加法指令；原子累加必须在 `DataCopy` 将 `LocalTensor` 搬回 `GlobalTensor` 的物理搬运过程中，通过配置原子操作模式触发。
+
+#### 2.4.3 本节核心设计：多核数据切分与 GM 原子加
+
+##### 2.4.3.1 基于 `GetBlockIdx()` 的多核数据切分
+
+每个 AI Core 独立执行相同的 Kernel 代码，通过硬件内置 API `GetBlockIdx()` 获取当前逻辑 Block 编号，计算各自负责的 GM 偏移量：
+
+```cpp
+// 1. 获取当前 Block 编号
+uint32_t blockIdx = GetBlockIdx();
+
+// 2. 根据 Block 编号映射各自负责的 GM 切片起始地址
+uint32_t coreLength = 524288; // 每个 Block 处理 2 MB 数据
+xGm.SetGlobalBuffer((__gm__ float*)x + blockIdx * coreLength, coreLength);
+```
+
+##### 2.4.3.2 MTE 硬件原子加与状态开关
+
+`SetAtomicAdd` 不是一个像 `Add` 那样直接对两个 `LocalTensor` 进行计算的算术指令，而是为 MTE 设定的硬件全局状态开关。
+
+**普通搬运与原子加搬运的差异：**
+
+- **普通搬运模式**：执行 `DataCopy` 时，MTE 直接将 UB 数据发送给 GM，目标 GM 地址的旧数据被覆盖。若 `32` 个 Core 同时写同一地址，后写入的数据会冲掉先写入的数据，导致结果错误。
+- **原子加搬运模式**：调用 `SetAtomicAdd<float>()` 后，MTE 切换至原子加状态。随后执行 `DataCopy` 时，MTE 向内存控制器发起 Read-Modify-Write 原子事务：锁定目标 GM 地址、读取旧值、将旧值与 UB 中的 `sumLocal` 相加、写回新值并解锁。即使 `32` 个 Core 同时触发写回，GM 侧硬件也会串行化这些事务，确保累加结果正确。
+
+**代码三步范式：**
+
+```cpp
+// 1. 开启 MTE 对 float32 的原子加状态
+SetAtomicAdd<float>();
+
+// 2. 触发 DataCopy 写回 GM：MTE 自动将 sumLocal[0] 累加至 yGm[0]
+// 受 32 B 对齐限制，此处传输 8 个 FP32。
+DataCopy(yGm, sumLocal, 8);
+
+// 3. 关闭原子加状态，恢复默认写覆盖模式
+SetAtomicSub(); // 或 SetAtomicNone()，取决于架构与驱动版本
+```
+
+`SetAtomicAdd` 设置的是 AI Core 内 MTE 搬运管道的全局状态。`DataCopy` 执行后必须立即关闭，否则该 Kernel 后续的其他 `DataCopy` 也会被按原子加处理，导致不可预期的计算结果。
+
+此外，多核采用“GM 旧值 + 本核局部和”的原子累加机制，因此 Kernel 启动前，Host 侧必须确保输出内存 `y` 至少预留 `32 B` 且已物理清零。若目标地址残留脏数据，原子加会将脏数据一并计入最终结果。
+
+#### 2.4.4 Hard 关卡完整 Kernel 实现
+
+```cpp
+#include "kernel_operator.h"
+
+using namespace AscendC;
+
+class KernelReduceSumHard {
+public:
+    __aicore__ inline KernelReduceSumHard() {}
+
+    __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, uint32_t totalLength) {
+        // 1. 多核切分计算：每个 Core 处理 524288 个元素（2 MB）
+        this->coreLength = 524288;
+        this->tileLength = 8192;
+        this->tileNum = this->coreLength / this->tileLength; // 64 次 Tile 循环
+
+        // 获取当前 Block 编号，映射各自的输入 GM 切片起始位置
+        uint32_t blockIdx = GetBlockIdx();
+        xGm.SetGlobalBuffer((__gm__ float*)x + blockIdx * this->coreLength, this->coreLength);
+
+        // 映射统一的输出 GM 地址，32 个 Core 共同累加至 yGm[0]
+        yGm.SetGlobalBuffer((__gm__ float*)y, 1);
+
+        // 2. 初始化片上内存管道（TPipe）
+        pipe.InitBuffer(inQueueX, 2, this->tileLength * sizeof(float)); // Ping-Pong 双缓冲
+        pipe.InitBuffer(outQueueY, 1, 32);                              // 单 Tile 规约临时输出
+        pipe.InitBuffer(sumBuf, 1, 32);                                 // UB 局部累加器
+
+        // 3. 先初始化队列，再动态查询 WholeReduceSum 所需辅助空间大小并初始化 TBuf
+        uint32_t tmpBytes = 0;
+        GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
+        pipe.InitBuffer(tmpBuffer, tmpBytes);
+    }
+
+    __aicore__ inline void Process() {
+        // 使用 Vector 单元清零本 Core 的 UB 局部累加器，填充 8 个 FP32
+        LocalTensor<float> sumLocal = sumBuf.Get<float>();
+        Duplicate(sumLocal, 0.0f, 8);
+
+        // 64 次 Tile 循环：计算本 Core 的局部规约和
+        for (uint32_t i = 0; i < this->tileNum; ++i) {
+            // Stage 1: CopyIn - 按 Tile 偏移量将 32 KB 数据搬入 UB
+            LocalTensor<float> xLocal = inQueueX.AllocTensor<float>();
+            DataCopy(xLocal, xGm[i * this->tileLength], this->tileLength);
+            inQueueX.EnQue(xLocal);
+
+            // Stage 2: Compute - 片上规约与核内累加
+            LocalTensor<float> xCalc = inQueueX.DeQue<float>();
+            LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
+            LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]
+            WholeReduceSum(yLocal, xCalc, tmpTensor, this->tileLength);
+
+            // 在 UB 内原址累加至本 Core 的 sumLocal
+            Add(sumLocal, sumLocal, yLocal, 8);
+
+            outQueueY.FreeTensor(yLocal);
+            inQueueX.FreeTensor(xCalc);
+        }
+
+        // Stage 3: CopyOut - 多核原子加写回 GM
+        // 1. 开启 MTE 原子加开关
+        SetAtomicAdd<float>();
+
+        // 2. 触发 DataCopy：MTE 发起 Read-Modify-Write 事务，将 sumLocal[0] 累加至 yGm[0]
+        DataCopy(yGm, sumLocal, 8);
+
+        // 3. 关闭原子加开关，恢复默认写覆盖模式
+        SetAtomicSub();
+    }
+
+private:
+    TPipe pipe;
+    TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
+    TQue<QuePosition::VECOUT, 1> outQueueY;
+    TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
+    TBuf<TPosition::VECCALC> tmpBuffer;   // WholeReduceSum 辅助临时空间
+
+    GlobalTensor<float> xGm;
+    GlobalTensor<float> yGm;
+
+    uint32_t coreLength;
+    uint32_t tileLength;
+    uint32_t tileNum;
+};
+
+extern "C" __global__ __aicore__ void reduce_sum_hard(GM_ADDR x, GM_ADDR y) {
+    KernelReduceSumHard op;
+    op.Init(x, y, 16777216);
+    op.Process();
+}
+```
+
+#### 2.4.5 Atomic 规约与 Two-Stage 规约
+
+Hard 关卡使用基于 `SetAtomicAdd` 的单阶段多核规约。在工业级通用算子开发中，跨核规约存在两种主流设计方案：
+
+| 方案 | 架构原理 | 优点 | 缺点与适用场景 |
+| --- | --- | --- | --- |
+| **Atomic 规约**（本关卡方案） | 各 Core 计算完局部和后，直接通过 MTE 对同一个 GM 地址执行 `SetAtomicAdd`。 | 内存占用低，不需要额外开辟 WorkSpace，Kernel 逻辑简洁。 | 当并发 Core 数量较多时，会高频争抢同一个 GM 物理 Bank，造成总线等待与性能下降。 |
+| **Two-Stage 规约**（两阶段规约） | Stage 1：各 Core 将 `core_local_sum` 写入 `WorkSpace[blockIdx]` 的独立槽位；Stage 2：由单个或少量 Core 发起第二次轻量级规约，汇总所有局部和。 | 无跨核写竞争，MTE 写入可以无锁并发；大核数下性能与吞吐上限更高。 | 需要额外的 WorkSpace，由 Host 申请并传入；Kernel 流程也更复杂。 |
+
+实际工程中，需要根据数据规模、AI Core 数量以及设备 GM 访存带宽，选择更符合性能效益的跨核规约模式。
+
+#### 2.4.6 实践作业
+
+将上述实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Hard 题目。以题目评测通过作为本节实践作业的完成标准；比较 Atomic 规约与 Two-Stage 规约的实现复杂度与性能差异。
