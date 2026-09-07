@@ -234,6 +234,30 @@ extern "C" __global__ __aicore__ void reduce_sum_easy(GM_ADDR x, GM_ADDR y) {
 #### 2.2.5 实践作业
 
 将本节实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Easy 题目。以题目评测通过作为本节实践作业的完成标准。
+
+#### 2.2.6 本节自测
+
+**2.2-Q1.** Reduce Sum Easy 的输出逻辑上只有一个 `float32`，但 `outQueueY` 仍分配 `32 B` 的原因是：
+
+- A. `WholeReduceSum` 必须输出 8 个不同的标量。
+- B. Vector 计算和 MTE 写回需要满足最小 `32 B` 对齐粒度。
+- C. 每个 AI Core 必须保留 8 个输出队列。
+- D. `float32` 在 UB 中固定占用 `32 B`。
+
+**2.2-Q2.** `GetWholeReduceSumMinTmpSize` 应在何时调用？
+
+- A. `WholeReduceSum` 执行完成之后。
+- B. 在 `InitBuffer(inQueueX, ...)` 和 `InitBuffer(outQueueY, ...)` 之前。
+- C. 输入、输出队列初始化之后，`tmpBuffer` 初始化之前。
+- D. 仅在 Host 端启动 Kernel 之后。
+
+**2.2-Q3.** `WholeReduceSum` 的 `sharedTmpBuffer` 使用 `LocalTensor<uint8_t>` 的主要原因是：
+
+- A. 规约结果必须转换为 `uint8_t`。
+- B. 临时空间按字节查询和分配，不承载业务数据类型。
+- C. `float32` 不能存储在 UB 中。
+- D. MTE 只能搬运 `uint8_t` 数据。
+
 ### 2.3 Medium 关卡：单核多 Tile 循环
 
 #### 2.3.1 题目规格
@@ -406,6 +430,30 @@ extern "C" __global__ __aicore__ void reduce_sum_medium(GM_ADDR x, GM_ADDR y) {
 #### 2.3.5 实践作业
 
 将上述实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Medium 题目。以题目评测通过作为本节实践作业的完成标准；同时记录 Tile 循环次数、UB 占用与提交耗时。
+
+#### 2.3.6 本节自测
+
+**2.3-Q1.** Reduce Sum Medium 中，`sumBuf` 选用 `TBuf` 而不是 `TQue` 的主要原因是：
+
+- A. `TBuf` 只能保存 `float32`，`TQue` 不能。
+- B. 局部累加器需要贯穿整个 Tile 循环，不参与入队和出队调度。
+- C. `TQue` 无法分配 UB 空间。
+- D. `TBuf` 会自动将数据写回 GM。
+
+**2.3-Q2.** `Duplicate(sumLocal, 0.0f, 8)` 的作用是：
+
+- A. 将 8 个 Tile 同时复制到 GM。
+- B. 将当前 Tile 的 8 个元素规约为一个标量。
+- C. 在 UB 中将局部累加器的 8 个 FP32 位置清零。
+- D. 为输入队列创建两个 Buffer。
+
+**2.3-Q3.** `outQueueY` 采用深度 `1` 的合理原因是：
+
+- A. 规约结果在同一轮中立刻被 `Add` 消费并释放。
+- B. 输出标量不能放进双缓冲。
+- C. `WholeReduceSum` 只能使用单缓冲输入。
+- D. 深度 `2` 会改变浮点数精度。
+
 ### 2.4 Hard 关卡：多 Core 协同与跨核归约
 
 #### 2.4.1 题目规格
@@ -598,3 +646,26 @@ Hard 关卡使用基于 `SetAtomicAdd` 的单阶段多核规约。在工业级�
 #### 2.4.6 实践作业
 
 将上述实现整理为完整的 `kernel.asc`，提交至本节对应的 TensorOJ Reduce Sum Hard 题目。以题目评测通过作为本节实践作业的完成标准；比较 Atomic 规约与 Two-Stage 规约的实现复杂度与性能差异。
+
+#### 2.4.7 本节自测
+
+**2.4-Q1.** Hard 关卡中，`GetBlockIdx()` 的作用是：
+
+- A. 查询当前 Tile 在 UB 中的物理地址。
+- B. 获取当前逻辑 Block 编号，以计算各自负责的 GM 输入偏移。
+- C. 获取当前 Vector 指令的 SIMD 宽度。
+- D. 将多个 AI Core 强制绑定到同一个 Block。
+
+**2.4-Q2.** 多个 AI Core 将局部和写回同一 `yGm[0]` 时，为什么需要 `SetAtomicAdd<float>()`？
+
+- A. 让 `WholeReduceSum` 自动扩大 Tile 长度。
+- B. 将 UB 中的数据自动转换为 `float16`。
+- C. 让 MTE 的 `DataCopy` 以原子读改写方式合并各 Core 的局部和。
+- D. 在 Host 端创建 32 个 Stream。
+
+**2.4-Q3.** 相比 Atomic 规约，Two-Stage 规约的主要特点是：
+
+- A. 完全不需要额外 GM 空间。
+- B. 各 Core 先写入独立 WorkSpace 槽位，避免直接竞争同一输出地址。
+- C. 只能由单个 AI Core 读取输入数据。
+- D. 不需要进行第二阶段的结果汇总。
