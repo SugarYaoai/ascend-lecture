@@ -132,8 +132,8 @@ WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
 // 第 2 阶：128 个局部和按两组规约，得到 2 个局部和。
 WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
 
-// 第 3 阶：将最后两个局部和折叠为 yLocal[0]。
-WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
+// 第 3 阶：单 repeat 必须原地规约，结果落在 tailLocal[0]。
+WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
 ```
 
 这里的 `srcRepStride = 8` 表示相邻完整 FP32 组相隔 `8` 个 `32 B` 数据块，即 `8 x 8 = 64` 个 FP32 元素。
@@ -154,8 +154,10 @@ LocalTensor<float> tailLocal = tailBuf.Get<float>();
 
 WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
 WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-// 规约结果写入 yLocal[0]；yLocal[1] 到 yLocal[7] 为 Padding。
-WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
+// 最后一阶要求源、目标完全重叠，因此先原地规约，再复制到输出队列。
+WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
+Duplicate(yLocal, 0.0f, 8);
+Add(yLocal, yLocal, tailLocal, 8); // yLocal[0] 为最终结果，其余位置是 Padding。
 
 outQueueY.EnQue(yLocal);
 inQueueX.FreeTensor(xCalc);
@@ -211,7 +213,9 @@ public:
 
         WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
         WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-        WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
+        WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
+        Duplicate(yLocal, 0.0f, 8);
+        Add(yLocal, yLocal, tailLocal, 8);
 
         outQueueY.EnQue(yLocal);
         inQueueX.FreeTensor(xCalc);
@@ -426,7 +430,9 @@ public:
             // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
             WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
             WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-            WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
+            WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
+            Duplicate(yLocal, 0.0f, 8);
+            Add(yLocal, yLocal, tailLocal, 8);
 
             // 在 UB 内将当前 Tile 规约结果原址累加至 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
@@ -646,7 +652,9 @@ public:
             // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
             WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
             WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-            WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
+            WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
+            Duplicate(yLocal, 0.0f, 8);
+            Add(yLocal, yLocal, tailLocal, 8);
 
             // 在 UB 内原址累加至本 Core 的 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
