@@ -353,6 +353,7 @@ Vector 单元执行 `Add` 时，会先将 `sumLocal` 和 `yLocal` 读入矢量�
 
 - **`inQueueX`，Depth = 2**：用于让 Tile $i+1$ 的 CopyIn 搬运与 Tile $i$ 的 Compute 重叠执行。
 - **`outQueueY`，Depth = 1**：仅作为当前 Tile 执行 `ReduceSum` 的临时输出中转区。每个 Tile 计算完成后立即被 `Add` 消费并释放，深度为 `1` 即可满足需求。
+- **`workQueue`，Depth = 1**：为当前 Tile 的 `ReduceSum` 提供工作区。它不承载业务输入或输出，规约结束后立即释放，因此单缓冲即可。
 
 #### 2.3.4 Medium 关卡完整 Kernel 实现
 
@@ -570,6 +571,8 @@ SetAtomicSub(); // 或 SetAtomicNone()，取决于架构与驱动版本
 `SetAtomicAdd` 设置的是 AI Core 内 MTE 搬运管道的全局状态。`DataCopy` 执行后必须立即关闭，否则该 Kernel 后续的其他 `DataCopy` 也会被按原子加处理，导致不可预期的计算结果。
 
 此外，多核采用“GM 旧值 + 本核局部和”的原子累加机制，因此 Kernel 启动前，Host 侧必须确保输出内存 `y` 至少预留 `32 B` 且已物理清零。若目标地址残留脏数据，原子加会将脏数据一并计入最终结果。
+
+每个 AI Core 的核内循环与 Medium 相同：每次从 GM 搬入一个 `8192` 元素的 Tile，使用 `ReduceSum(yLocal, xCalc, workLocal, tileLength)` 得到该 Tile 的局部和，再通过 `Add` 累加到 `sumLocal`。区别只在于循环结束后，`sumLocal[0]` 由原子 `DataCopy` 合并到全局输出。
 
 #### 2.4.4 Hard 关卡完整 Kernel 实现
 
