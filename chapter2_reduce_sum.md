@@ -577,7 +577,7 @@ SetAtomicNone();
 
 `SetAtomicAdd` 设置的是 AI Core 内 MTE 搬运管道的全局状态。`DataCopy` 执行后必须立即关闭，否则该 Kernel 后续的其他 `DataCopy` 也会被按原子加处理，导致不可预期的计算结果。
 
-此外，多核采用“GM 旧值 + 本核局部和”的原子累加机制，因此 Kernel 启动前，Host 侧必须确保输出内存 `y` 至少预留 `32 B` 且已物理清零。若目标地址残留脏数据，原子加会将脏数据一并计入最终结果。
+此外，多核采用“GM 旧值 + 本核局部和”的原子累加机制，因此在启动 `32` 个规约 Block 前必须先将输出 `y` 清零。TensorOJ 的 `run_kernel` 入口中先在同一 Stream 启动一个单 Block 的清零核，再启动规约核；同一 Stream 保证两次启动按顺序执行，避免把输出内存的残留数据计入结果。
 
 每个 AI Core 的核内循环与 Medium 相同：每次从 GM 搬入一个 `8192` 元素的 Tile，使用 `ReduceSum(yLocal, xCalc, workLocal, tileLength)` 得到该 Tile 的局部和，再通过 `Add` 累加到 `sumLocal`。区别只在于循环结束后，`sumLocal[0]` 由原子 `DataCopy` 合并到全局输出。
 
@@ -604,8 +604,8 @@ public:
         uint32_t blockIdx = GetBlockIdx();
         xGm.SetGlobalBuffer((__gm__ float*)x + blockIdx * this->coreLength, this->coreLength);
 
-        // 映射统一的输出 GM 地址，32 个 Core 共同累加至 yGm[0]
-        yGm.SetGlobalBuffer((__gm__ float*)y, 1);
+        // 映射统一的输出 GM 地址。逻辑结果在 yGm[0]，物理搬运保留 32 B 对齐空间。
+        yGm.SetGlobalBuffer((__gm__ float*)y, 8);
 
         // 2. 初始化片上内存管道（TPipe）
         pipe.InitBuffer(inQueueX, 2, this->tileLength * sizeof(float)); // Ping-Pong 双缓冲
@@ -678,7 +678,25 @@ extern "C" __global__ __vector__ void reduce_sum_hard_custom(GM_ADDR x, GM_ADDR 
     op.Process();
 }
 
-// TensorOJ 入口：输出 y 必须由评测框架在启动前清零，供 32 个 Block 原子累加。
+// 原子加的目标必须从 0 开始。此 Kernel 与规约 Kernel 在同一 Stream 上顺序启动。
+extern "C" __global__ __vector__ void clear_reduce_sum_output(GM_ADDR y) {
+    TPipe pipe;
+    TQue<QuePosition::VECOUT, 1> outQueue;
+    GlobalTensor<float> yGm;
+
+    yGm.SetGlobalBuffer((__gm__ float*)y, 8);
+    pipe.InitBuffer(outQueue, 1, 32);
+
+    LocalTensor<float> zeroLocal = outQueue.AllocTensor<float>();
+    Duplicate(zeroLocal, 0.0f, 8);
+    outQueue.EnQue(zeroLocal);
+
+    zeroLocal = outQueue.DeQue<float>();
+    DataCopy(yGm, zeroLocal, 8);
+    outQueue.FreeTensor(zeroLocal);
+}
+
+// TensorOJ 入口：先清零原子目标，再用 32 个逻辑 Block 并行规约。
 extern "C" void run_kernel(
     GM_ADDR x, const TensorGroupInfo& info_x,
     GM_ADDR y, const TensorGroupInfo& info_y,
@@ -692,6 +710,7 @@ extern "C" void run_kernel(
         return;
     }
 
+    clear_reduce_sum_output<<<1, nullptr, stream>>>(y);
     reduce_sum_hard_custom<<<32, nullptr, stream>>>(x, y);
 }
 ```
