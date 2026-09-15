@@ -693,7 +693,8 @@ extern "C" void run_kernel(
     }
 
     // Runtime 内存操作，不计为 Kernel 启动；同一 Stream 保证其先于规约 Kernel 完成。
-    aclrtMemsetAsync(reinterpret_cast<void*>(y), 32, 0, 32, stream);
+    void* outputAddr = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(y));
+    aclrtMemsetAsync(outputAddr, 32, 0, 32, stream);
     reduce_sum_hard_custom<<<32, nullptr, stream>>>(x, y);
 }
 ```
