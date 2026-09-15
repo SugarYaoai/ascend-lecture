@@ -110,10 +110,10 @@
 | 局部规约 | Local reduction | 一个 Tile 或一个 Block 内部完成的规约，结果仍需要继续与其他局部和合并。 |
 | 局部和 | Local sum | 当前 Tile 或当前 Block 处理数据的累加结果，例如 `sumLocal`。 |
 | 树状规约 | Tree Reduction | 通过多轮对半相加逐步收敛数据的并行归约方式；64 个元素可在 6 轮内收敛为 1 个结果。 |
-| `WholeReduceSum` | Ascend C API | 在 UB 内对每个 Vector repeat 执行树状求和的规约接口；通过 `mask`、`repeatTimes` 和步长控制输入与局部和的布局。 |
-| `partialBuf` | 一级局部和 Buffer | 保存 `WholeReduceSum` 第一阶段输出的局部和；Reduce Sum Easy 中保存 `128` 个 FP32 局部和。 |
-| `tailBuf` | 二级局部和 Buffer | 保存第二阶段输出的少量局部和；Reduce Sum Easy 中保存 `2` 个 FP32 局部和。 |
-| `TBuf` | C++ API | 在 UB 中申请不参与入队、出队调度的固定 Buffer；适合 `sumBuf`、`partialBuf`、`tailBuf` 等长期存在的局部状态。 |
+| `WholeReduceSum` | Ascend C API | 在 UB 内对每个 Vector repeat 执行树状求和的基础接口；通过 `mask`、`repeatTimes` 和步长控制输入与局部和的布局。 |
+| `ReduceSum` | Ascend C API | 按完整元素数执行片上求和规约的接口；调用时传入 `dst`、`src`、同类型工作区和 `count`。 |
+| `workQueue` | 规约工作队列 | 为 `ReduceSum` 提供片上临时空间的 `TQue<VECCALC, 1>` 队列，通常按一个 Tile 的大小分配。 |
+| `TBuf` | C++ API | 在 UB 中申请不参与入队、出队调度的固定 Buffer；适合跨 Tile 持续存在的 `sumBuf` 等局部状态。 |
 | `sumBuf` | Local sum buffer | 保存跨 Tile 持续累加结果的 UB Buffer，通常以 `TBuf` 管理。 |
 | 原子加 | Atomic Add | 多个 Block 访问同一 GM 地址时，将读、加、写作为不可分割事务执行的机制。 |
 | `SetAtomicAdd` | Ascend C API | 将 MTE 的后续写回操作切换为原子加模式；通常与一次 `DataCopy` 配对使用。 |
@@ -213,8 +213,8 @@
 | 题号 | 答案 | 关键理由 |
 | --- | --- | --- |
 | 2.2-Q1 | B | 逻辑结果只有一个元素，但 Vector 与 MTE 的片上读写、搬运需要满足 `32 B` 对齐。 |
-| 2.2-Q2 | B | FP32 的完整 `256 B` Vector repeat 为 `64` 个元素，`8192 / 64 = 128`。 |
-| 2.2-Q3 | A | 每个 repeat 只生成一个局部和，因此 `8192 -> 128 -> 2 -> 1` 需要两块中间结果 Buffer。 |
+| 2.2-Q2 | B | `workLocal` 只服务于 `ReduceSum` 的片上中间规约过程，不承载最终 GM 输出。 |
+| 2.2-Q3 | A | 工作区必须覆盖一个 Tile 的规约过程，避免接口在 UB 中写越界。 |
 
 #### A.3.2 2.3 Reduce Sum Medium
 

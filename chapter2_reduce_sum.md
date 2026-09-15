@@ -51,7 +51,7 @@ $$
 ##### 2.1.2.1 Easy 版本：单核单 Tile
 
 - **题目数据**：`8192` 个 `float32` 元素，共 `32 KB`；输入 `x` 的形状为 `(8192,)`，每个元素范围为 $[-1.0, 1.0]$；输出 `y` 的形状为 `(1,)`，范围为 $[-8192, 8192]$。
-- **任务要求**：使用单个 AI Core 处理完整输入，将 `x` 搬入 UB，在片上执行 `WholeReduceSum` 或 `BlockReduceSum`，再将标量结果写回 GM。
+- **任务要求**：使用单个 AI Core 处理完整输入，将 `x` 搬入 UB，在片上执行 `ReduceSum`，再将标量结果写回 GM。
 - **学习重点**：数据从 $N$ 到 $1$ 的分级折叠过程与 `256 B` 对齐。
 - **难点隔离**：暂不引入 Tile 循环与多核并发。
 
@@ -102,41 +102,34 @@ float ReduceSum_CPU(const float* xCalc, int N) {
 - **硬件算力的并行度要求**：Vector 单元单次指令的物理吞吐能力为 `256 B`，可一次性处理 `64` 个 `float32` 元素。采用串行 `for` 循环逐个计算，会浪费矢量计算单元的并行吞吐能力。
 - **物理数据块的 `32 B` 粒度限制**：标准 C++ 中 `float` 标量仅占 `4 B`。但在 NPU 中，Vector 单元的读写计算以及 MTE 引擎的数据搬运，物理最小单位均为 `32 B` 数据块，即 `8` 个 `float32`。即便逻辑上只需输出 `1` 个标量，在片上开辟空间及写回 GM 时，也必须按 `32 B` 对齐处理，后 `7` 个位置作为 Padding 自动忽略。
 
-#### 2.2.3 本节核心 API：片上规约 `WholeReduceSum`
+#### 2.2.3 本节核心 API：片上规约 `ReduceSum`
 
-Ascend C 的 Vector 单元提供 `WholeReduceSum` API 替代串行 `for` 循环。它每次按 `256 B` 的 Vector 基础粒度对一组数据做树状折叠；对于本题的 `8192` 个 FP32，需要在 UB 内分三级完成 `8192 -> 128 -> 2 -> 1` 的规约。
+Ascend C 的 Vector 单元提供 `ReduceSum` API 替代串行 `for` 循环。该接口接收完整元素数 `count`，由接口在 UB 内完成树状规约；开发者只需提供一个同类型的片上工作区保存中间结果。
 
 ##### 2.2.3.1 API 接口签名
 
 ```cpp
 template <typename T>
-__aicore__ inline void WholeReduceSum(
-    const LocalTensor<T>& dstLocal,  // 每个 repeat 的规约结果
-    const LocalTensor<T>& srcLocal,  // 输入 Tensor
-    const int32_t mask,              // 每次规约的元素个数，FP32 的完整 256 B 为 64
-    const int32_t repeatTimes,       // 重复规约次数
-    const int32_t dstRepStride,      // 相邻输出结果的步长
-    const int32_t srcBlkStride,      // 源数据块步长
-    const int32_t srcRepStride       // 相邻 repeat 的源步长
+__aicore__ inline void ReduceSum(
+    const LocalTensor<T>& dstLocal,        // 输出 Tensor，结果写入 dstLocal[0]
+    const LocalTensor<T>& srcLocal,        // 输入 Tensor
+    const LocalTensor<T>& sharedTmpBuffer, // 与输入同类型的片上工作区
+    const int32_t count                     // 参与规约的元素个数
 );
 ```
 
-##### 2.2.3.2 三阶段规约的中间结果
+##### 2.2.3.2 片上工作区 `workQueue`
 
-`WholeReduceSum` 的底层接口一次只处理一组 `mask` 元素，并为每个 `repeat` 写出一个局部和。因此，`8192` 个 FP32 先按 `128` 个完整的 `64` 元素组规约，得到 `128` 个局部和；随后规约为 `2` 个局部和，最后折叠成一个结果。
+`ReduceSum` 会在内部按 Vector 的 `256 B` 基础粒度组织树状规约。`sharedTmpBuffer` 不保存业务输出，而是给接口保存中间局部和。为让 Easy、Medium 与 Hard 的代码组织一致，本章将工作区按一个完整 Tile 的大小申请。
 
 ```cpp
-// 第 1 阶：8192 个元素按 128 组规约，得到 128 个局部和。
-WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+TQue<QuePosition::VECCALC, 1> workQueue;
+pipe.InitBuffer(workQueue, 1, 8192 * sizeof(float));
 
-// 第 2 阶：128 个局部和按两组规约，得到 2 个局部和。
-WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-
-// 第 3 阶：单 repeat 必须原地规约，结果落在 tailLocal[0]。
-WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
+LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
+ReduceSum<float>(yLocal, xCalc, workLocal, 8192);
+workQueue.FreeTensor(workLocal);
 ```
-
-这里的 `srcRepStride = 8` 表示相邻完整 FP32 组相隔 `8` 个 `32 B` 数据块，即 `8 x 8 = 64` 个 FP32 元素。
 
 ##### 2.2.3.3 `yLocal` 的空间申请与 `32 B` 对齐
 
@@ -149,15 +142,11 @@ pipe.InitBuffer(outQueueY, 1, 32);
 // Compute 阶段：yLocal 实际包含 8 个 float32 元素。
 LocalTensor<float> xCalc = inQueueX.DeQue<float>();
 LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-LocalTensor<float> partialLocal = partialBuf.Get<float>();
-LocalTensor<float> tailLocal = tailBuf.Get<float>();
+LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
 
-WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
-WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-// 最后一阶要求源、目标完全重叠，因此先原地规约，再复制到输出队列。
-WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
-Duplicate(yLocal, 0.0f, 8);
-Add(yLocal, yLocal, tailLocal, 8); // yLocal[0] 为最终结果，其余位置是 Padding。
+// 规约结果写入 yLocal[0]；yLocal[1] 到 yLocal[7] 为 Padding。
+ReduceSum<float>(yLocal, xCalc, workLocal, 8192);
+workQueue.FreeTensor(workLocal);
 
 outQueueY.EnQue(yLocal);
 inQueueX.FreeTensor(xCalc);
@@ -192,9 +181,8 @@ public:
         // 必须通过 outQueueY 开辟 32 B 物理空间，即 8 个 FP32。
         pipe.InitBuffer(outQueueY, 1, 32);
 
-        // 3. 分级规约的中间结果：128 个局部和（512 B）和 2 个局部和（32 B）。
-        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 32);
+        // 3. ReduceSum 的工作区：按完整 Tile 申请，供接口保存片上中间结果。
+        pipe.InitBuffer(workQueue, 1, this->totalLength * sizeof(float));
     }
 
     __aicore__ inline void Process() {
@@ -203,19 +191,14 @@ public:
         DataCopy(xLocal, xGm[0], this->totalLength);
         inQueueX.EnQue(xLocal);
 
-        // Stage 2: Compute - 8192 -> 128 -> 2 -> 1 的分级片上规约
+        // Stage 2: Compute - 调用 ReduceSum 完成片上全量规约
         LocalTensor<float> xCalc = inQueueX.DeQue<float>();
 
         // yLocal 实际包含 8 个 FP32（32 B），规约结果写入 yLocal[0]。
         LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-        LocalTensor<float> partialLocal = partialBuf.Get<float>();
-        LocalTensor<float> tailLocal = tailBuf.Get<float>();
-
-        WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
-        WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-        WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
-        Duplicate(yLocal, 0.0f, 8);
-        Add(yLocal, yLocal, tailLocal, 8);
+        LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
+        ReduceSum<float>(yLocal, xCalc, workLocal, this->totalLength);
+        workQueue.FreeTensor(workLocal);
 
         outQueueY.EnQue(yLocal);
         inQueueX.FreeTensor(xCalc);
@@ -231,8 +214,7 @@ private:
     TPipe pipe;
     TQue<QuePosition::VECIN, 1> inQueueX;
     TQue<QuePosition::VECOUT, 1> outQueueY;
-    TBuf<TPosition::VECCALC> partialBuf;
-    TBuf<TPosition::VECCALC> tailBuf;
+    TQue<QuePosition::VECCALC, 1> workQueue;
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -273,24 +255,24 @@ extern "C" void run_kernel(
 
 **2.2-Q1.** Reduce Sum Easy 的输出逻辑上只有一个 `float32`，但 `outQueueY` 仍分配 `32 B` 的原因是：
 
-- A. `WholeReduceSum` 必须输出 8 个不同的标量。
+- A. `ReduceSum` 必须输出 8 个不同的标量。
 - B. Vector 计算和 MTE 写回需要满足最小 `32 B` 对齐粒度。
 - C. 每个 AI Core 必须保留 8 个输出队列。
 - D. `float32` 在 UB 中固定占用 `32 B`。
 
-**2.2-Q2.** 对 `8192` 个 FP32 做第一阶段 `WholeReduceSum` 时，正确的 `mask` 与 `repeatTimes` 是：
+**2.2-Q2.** `ReduceSum(yLocal, xCalc, workLocal, 8192)` 中，`workLocal` 的作用是：
 
-- A. `mask = 1`，`repeatTimes = 8192`。
-- B. `mask = 64`，`repeatTimes = 128`。
-- C. `mask = 128`，`repeatTimes = 64`。
-- D. `mask = 8192`，`repeatTimes = 1`。
+- A. 保存最终的 GM 输出。
+- B. 保存接口规约过程中的片上中间结果。
+- C. 保存下一 Tile 的输入数据。
+- D. 记录 Host 端的启动参数。
 
-**2.2-Q3.** 本节为什么还需要 `partialBuf` 与 `tailBuf` 两块 UB Buffer？
+**2.2-Q3.** 为什么 `workQueue` 要按完整 Tile 的大小分配？
 
-- A. `WholeReduceSum` 每次为每个 repeat 产生一个局部和，`8192` 个元素需分三级收敛为一个值。
+- A. `ReduceSum` 的工作区要能容纳一个 Tile 规约过程所需的片上中间结果。
 - B. `float32` 不能直接写入输出队列。
-- C. `partialBuf` 用于让 MTE 写回 GM。
-- D. 这两块 Buffer 只用来满足双缓冲的队列深度要求。
+- C. `workQueue` 用于让 MTE 写回 GM。
+- D. 它只用来满足双缓冲的队列深度要求。
 
 ### 2.3 Medium 关卡：单核多 Tile 循环
 
@@ -334,7 +316,7 @@ yGm[0] = sumLocal; // 错误：不能直接用 C++ 指针赋值写回 GM
 
 这种范式转变源于底层硬件架构的三项硬性约束：
 
-- **存储位置限制**：C++ 声明的 `float sumLocal` 会分配在 Scalar 寄存器中，而 `WholeReduceSum` 的结果存放在 UB 的 Vector 通道中。由于硬件不支持 Scalar 寄存器与 UB 之间的高吞吐、低延时频繁交互，累加器必须显式分配在 UB 中。
+- **存储位置限制**：C++ 声明的 `float sumLocal` 会分配在 Scalar 寄存器中，而 `ReduceSum` 的结果存放在 UB 的 Vector 通道中。由于硬件不支持 Scalar 寄存器与 UB 之间的高吞吐、低延时频繁交互，累加器必须显式分配在 UB 中。
 - **初始化方式限制**：UB 属于片上 SRAM，分配后可能残留脏数据。不能使用 C++ 赋值语句清零，必须调用 Vector 单元的 `Duplicate` 指令对 UB 累加空间进行矢量化清零初始化。
 - **计算指令限制**：不能使用 C++ 标量加法，必须调用 Vector 单元的 `Add` 指令，在 UB 内对累加器进行原址更新。
 
@@ -370,7 +352,7 @@ Vector 单元执行 `Add` 时，会先将 `sumLocal` 和 `yLocal` 读入矢量�
 为掩盖 MTE 从 GM 搬运数据到 UB 的长延时，输入队列 `inQueueX` 采用深度为 `2` 的双缓冲策略：
 
 - **`inQueueX`，Depth = 2**：用于让 Tile $i+1$ 的 CopyIn 搬运与 Tile $i$ 的 Compute 重叠执行。
-- **`outQueueY`，Depth = 1**：仅作为当前 Tile 执行 `WholeReduceSum` 的临时输出中转区。每个 Tile 计算完成后立即被 `Add` 消费并释放，深度为 `1` 即可满足需求。
+- **`outQueueY`，Depth = 1**：仅作为当前 Tile 执行 `ReduceSum` 的临时输出中转区。每个 Tile 计算完成后立即被 `Add` 消费并释放，深度为 `1` 即可满足需求。
 
 #### 2.3.4 Medium 关卡完整 Kernel 实现
 
@@ -404,9 +386,8 @@ public:
         // 声明 UB 局部累加器 Buffer，按 32 B（8 个 FP32）对齐
         pipe.InitBuffer(sumBuf, 32);
 
-        // 3. 每个 8192 元素 Tile 的分级规约中间结果。
-        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 32);
+        // 3. 每个 Tile 的 ReduceSum 工作区。
+        pipe.InitBuffer(workQueue, 1, this->tileLength * sizeof(float));
     }
 
     __aicore__ inline void Process() {
@@ -424,15 +405,11 @@ public:
             // Stage 2: Compute - 片上规约与局部累加
             LocalTensor<float> xCalc = inQueueX.DeQue<float>();
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-            LocalTensor<float> partialLocal = partialBuf.Get<float>();
-            LocalTensor<float> tailLocal = tailBuf.Get<float>();
+            LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
 
-            // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
-            WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
-            WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-            WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
-            Duplicate(yLocal, 0.0f, 8);
-            Add(yLocal, yLocal, tailLocal, 8);
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]。
+            ReduceSum<float>(yLocal, xCalc, workLocal, this->tileLength);
+            workQueue.FreeTensor(workLocal);
 
             // 在 UB 内将当前 Tile 规约结果原址累加至 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
@@ -450,8 +427,7 @@ private:
     TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
     TQue<QuePosition::VECOUT, 1> outQueueY;
     TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
-    TBuf<TPosition::VECCALC> partialBuf;  // 128 个一级局部和
-    TBuf<TPosition::VECCALC> tailBuf;     // 2 个二级局部和
+    TQue<QuePosition::VECCALC, 1> workQueue;
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -509,7 +485,7 @@ extern "C" void run_kernel(
 
 - A. 规约结果在同一轮中立刻被 `Add` 消费并释放。
 - B. 输出标量不能放进双缓冲。
-- C. `WholeReduceSum` 只能使用单缓冲输入。
+- C. `ReduceSum` 只能使用单缓冲输入。
 - D. 深度 `2` 会改变浮点数精度。
 
 ### 2.4 Hard 关卡：多 Core 协同与跨核归约
@@ -626,9 +602,8 @@ public:
         pipe.InitBuffer(outQueueY, 1, 32);                              // 单 Tile 规约临时输出
         pipe.InitBuffer(sumBuf, 32);                                    // UB 局部累加器
 
-        // 3. 每个 8192 元素 Tile 的分级规约中间结果。
-        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 32);
+        // 3. 每个 Tile 的 ReduceSum 工作区。
+        pipe.InitBuffer(workQueue, 1, this->tileLength * sizeof(float));
     }
 
     __aicore__ inline void Process() {
@@ -646,15 +621,11 @@ public:
             // Stage 2: Compute - 片上规约与核内累加
             LocalTensor<float> xCalc = inQueueX.DeQue<float>();
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-            LocalTensor<float> partialLocal = partialBuf.Get<float>();
-            LocalTensor<float> tailLocal = tailBuf.Get<float>();
+            LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
 
-            // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
-            WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
-            WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
-            WholeReduceSum<float>(tailLocal, tailLocal, 2, 1, 1, 1, 8);
-            Duplicate(yLocal, 0.0f, 8);
-            Add(yLocal, yLocal, tailLocal, 8);
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]。
+            ReduceSum<float>(yLocal, xCalc, workLocal, this->tileLength);
+            workQueue.FreeTensor(workLocal);
 
             // 在 UB 内原址累加至本 Core 的 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
@@ -679,8 +650,7 @@ private:
     TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
     TQue<QuePosition::VECOUT, 1> outQueueY;
     TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
-    TBuf<TPosition::VECCALC> partialBuf;  // 128 个一级局部和
-    TBuf<TPosition::VECCALC> tailBuf;     // 2 个二级局部和
+    TQue<QuePosition::VECCALC, 1> workQueue;
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -740,7 +710,7 @@ Hard 关卡使用基于 `SetAtomicAdd` 的单阶段多核规约。在工业级�
 
 **2.4-Q2.** 多个 AI Core 将局部和写回同一 `yGm[0]` 时，为什么需要 `SetAtomicAdd<float>()`？
 
-- A. 让 `WholeReduceSum` 自动扩大 Tile 长度。
+- A. 让 `ReduceSum` 自动扩大 Tile 长度。
 - B. 将 UB 中的数据自动转换为 `float16`。
 - C. 让 MTE 的 `DataCopy` 以原子读改写方式合并各 Core 的局部和。
 - D. 在 Host 端创建 32 个 Stream。
