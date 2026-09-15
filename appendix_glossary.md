@@ -117,7 +117,7 @@
 | `sumBuf` | Local sum buffer | 保存跨 Tile 持续累加结果的 UB Buffer，通常以 `TBuf` 管理。 |
 | 原子加 | Atomic Add | 多个 Block 访问同一 GM 地址时，将读、加、写作为不可分割事务执行的机制。 |
 | `SetAtomicAdd` | Ascend C API | 将 MTE 的后续写回操作切换为原子加模式；通常与一次 `DataCopy` 配对使用。 |
-| `SetAtomicSub` | Ascend C API | 关闭 MTE 原子加状态并恢复默认写回模式的接口写法之一，具体可用接口取决于平台版本。 |
+| `SetAtomicNone` | Ascend C API | 清空原子操作状态，关闭 `SetAtomicAdd` 开启的 MTE 原子加模式并恢复默认写回。 |
 | Read-Modify-Write | RMW | 原子写回时先读取 GM 旧值、与新值相加、再写回的硬件事务。 |
 | 写后写冲突 | Write-after-Write, WAW | 多个 Core 同时写同一地址时，后写结果覆盖前写结果的竞争问题。 |
 | Two-Stage 规约 | Two-Stage Reduction | 先让各 Block 写入独立 WorkSpace，再发起第二次规约汇总局部和的跨核规约方案。 |

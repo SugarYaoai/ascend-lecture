@@ -560,12 +560,19 @@ xGm.SetGlobalBuffer((__gm__ float*)x + blockIdx * coreLength, coreLength);
 // 1. 开启 MTE 对 float32 的原子加状态
 SetAtomicAdd<float>();
 
-// 2. 触发 DataCopy 写回 GM：MTE 自动将 sumLocal[0] 累加至 yGm[0]
-// 受 32 B 对齐限制，此处传输 8 个 FP32。
-DataCopy(yGm, sumLocal, 8);
+// 2. 先将 VECCALC 中的局部和放入 VECOUT 队列。
+LocalTensor<float> atomicOut = outQueueY.AllocTensor<float>();
+Duplicate(atomicOut, 0.0f, 8);
+Add(atomicOut, atomicOut, sumLocal, 8);
+outQueueY.EnQue(atomicOut);
 
-// 3. 关闭原子加状态，恢复默认写覆盖模式
-SetAtomicSub(); // 或 SetAtomicNone()，取决于架构与驱动版本
+// 3. 触发 VECOUT -> GM 的原子写回。
+atomicOut = outQueueY.DeQue<float>();
+DataCopy(yGm, atomicOut, 8);
+outQueueY.FreeTensor(atomicOut);
+
+// 4. 关闭原子加状态，恢复默认写覆盖模式。
+SetAtomicNone();
 ```
 
 `SetAtomicAdd` 设置的是 AI Core 内 MTE 搬运管道的全局状态。`DataCopy` 执行后必须立即关闭，否则该 Kernel 后续的其他 `DataCopy` 也会被按原子加处理，导致不可预期的计算结果。
@@ -637,15 +644,17 @@ public:
             inQueueX.FreeTensor(xCalc);
         }
 
-        // Stage 3: CopyOut - 多核原子加写回 GM
-        // 1. 开启 MTE 原子加开关
+        // Stage 3: CopyOut - 先把 VECCALC 局部和转入 VECOUT，再原子写回 GM。
+        LocalTensor<float> atomicOut = outQueueY.AllocTensor<float>();
+        Duplicate(atomicOut, 0.0f, 8);
+        Add(atomicOut, atomicOut, sumLocal, 8);
+        outQueueY.EnQue(atomicOut);
+
+        atomicOut = outQueueY.DeQue<float>();
         SetAtomicAdd<float>();
-
-        // 2. 触发 DataCopy：MTE 发起 Read-Modify-Write 事务，将 sumLocal[0] 累加至 yGm[0]
-        DataCopy(yGm, sumLocal, 8);
-
-        // 3. 关闭原子加开关，恢复默认写覆盖模式
-        SetAtomicSub();
+        DataCopy(yGm, atomicOut, 8);
+        SetAtomicNone();
+        outQueueY.FreeTensor(atomicOut);
     }
 
 private:
