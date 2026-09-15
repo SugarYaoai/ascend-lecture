@@ -191,8 +191,8 @@ public:
         pipe.InitBuffer(outQueueY, 1, 32);
 
         // 3. 分级规约的中间结果：128 个局部和（512 B）和 2 个局部和（32 B）。
-        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 1, 32);
+        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 32);
     }
 
     __aicore__ inline void Process() {
@@ -342,7 +342,7 @@ yGm[0] = sumLocal; // 错误：不能直接用 C++ 指针赋值写回 GM
 
 ```cpp
 // Init 阶段：开辟 32 B 物理空间作为片上累加器 Buffer
-pipe.InitBuffer(sumBuf, 1, 32);
+pipe.InitBuffer(sumBuf, 32);
 
 // Process 阶段：获取 LocalTensor 并调用 Duplicate 指令清零，填充 8 个 FP32
 LocalTensor<float> sumLocal = sumBuf.Get<float>();
@@ -398,11 +398,11 @@ public:
         pipe.InitBuffer(outQueueY, 1, 32);
 
         // 声明 UB 局部累加器 Buffer，按 32 B（8 个 FP32）对齐
-        pipe.InitBuffer(sumBuf, 1, 32);
+        pipe.InitBuffer(sumBuf, 32);
 
         // 3. 每个 8192 元素 Tile 的分级规约中间结果。
-        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 1, 32);
+        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 32);
     }
 
     __aicore__ inline void Process() {
@@ -618,11 +618,11 @@ public:
         // 2. 初始化片上内存管道（TPipe）
         pipe.InitBuffer(inQueueX, 2, this->tileLength * sizeof(float)); // Ping-Pong 双缓冲
         pipe.InitBuffer(outQueueY, 1, 32);                              // 单 Tile 规约临时输出
-        pipe.InitBuffer(sumBuf, 1, 32);                                 // UB 局部累加器
+        pipe.InitBuffer(sumBuf, 32);                                    // UB 局部累加器
 
         // 3. 每个 8192 元素 Tile 的分级规约中间结果。
-        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
-        pipe.InitBuffer(tailBuf, 1, 32);
+        pipe.InitBuffer(partialBuf, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 32);
     }
 
     __aicore__ inline void Process() {
