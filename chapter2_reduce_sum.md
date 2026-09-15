@@ -159,6 +159,8 @@ CopyOut 阶段写回 GM 时，`DataCopy(yGm, yOutput, 8)` 的第三个参数必�
 #### 2.2.4 Easy 关卡完整 Kernel 实现
 
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include "kernel_operator.h"
 
 using namespace AscendC;
@@ -224,10 +226,28 @@ private:
     uint32_t totalLength;
 };
 
-extern "C" __global__ __aicore__ void reduce_sum_easy(GM_ADDR x, GM_ADDR y) {
+extern "C" __global__ __vector__ void reduce_sum_easy_custom(GM_ADDR x, GM_ADDR y) {
     KernelReduceSumEasy op;
     op.Init(x, y, 8192);
     op.Process();
+}
+
+// TensorOJ 入口：评测框架通过该函数传入 GM 地址、张量信息与 Stream。
+extern "C" void run_kernel(
+    GM_ADDR x, const TensorGroupInfo& info_x,
+    GM_ADDR y, const TensorGroupInfo& info_y,
+    int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
+        info_x.tensors[0].dtype != 0 || info_y.tensors[0].dtype != 0 ||
+        info_x.tensors[0].shape[0] != 8192 ||
+        info_y.tensors[0].shape[0] != 1 ||
+        availableCoreNum <= 0) {
+        return;
+    }
+
+    // Easy 关卡只启动一个逻辑 Block，由单个 AI Core 完成全量规约。
+    reduce_sum_easy_custom<<<1, nullptr, stream>>>(x, y);
 }
 ```
 
