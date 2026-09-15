@@ -44,7 +44,7 @@ $$
 
 | 关卡 | 数据规模 | 架构特征 | 核心设计目标 | 隔离的工程难点 |
 | --- | --- | --- | --- | --- |
-| **Easy 版本** | `32 KB`<br>`8192` 个 FP32 | 单核、单个 Tile<br>一次性装入 UB | **聚焦片上规约链路**：掌握数据从 $N$ 到 $1$ 的折叠过程、`256 B` 对齐与 `tmpBuffer` 临时空间分配 | 暂不引入 Tile 循环与多核并发 |
+| **Easy 版本** | `32 KB`<br>`8192` 个 FP32 | 单核、单个 Tile<br>一次性装入 UB | **聚焦片上规约链路**：掌握数据从 $N$ 到 $1$ 的分级折叠过程与 `256 B` 对齐 | 暂不引入 Tile 循环与多核并发 |
 | **Medium 版本** | `2 MB`<br>`524288` 个 FP32 | 单核、多 Tile 循环<br>突破 UB 容量限制 | **聚焦单核片上累加**：掌握单核 Tiling 策略、Tile 偏移、`sum_buffer` 临时存储及各 Tile 局部和累加 | 中间结果全在单 Core 内管理，不引入跨 Core 汇总 |
 | **Hard 版本** | `64 MB`<br>`16777216` 个 FP32 | `32` 个 AI Core 并行<br>突破单核算力瓶颈 | **聚焦多核 Atomic 写**：掌握基于 `block_idx` 的跨核数据切分、多核竞争与硬件 Atomic Add 使用 | 比较 Atomic 规约与 Two-Stage 规约（WorkSpace 缓存二次归约）的性能差异 |
 
@@ -52,7 +52,7 @@ $$
 
 - **题目数据**：`8192` 个 `float32` 元素，共 `32 KB`；输入 `x` 的形状为 `(8192,)`，每个元素范围为 $[-1.0, 1.0]$；输出 `y` 的形状为 `(1,)`，范围为 $[-8192, 8192]$。
 - **任务要求**：使用单个 AI Core 处理完整输入，将 `x` 搬入 UB，在片上执行 `WholeReduceSum` 或 `BlockReduceSum`，再将标量结果写回 GM。
-- **学习重点**：数据从 $N$ 到 $1$ 的折叠过程、`256 B` 对齐与 `tmpBuffer` 临时空间分配。
+- **学习重点**：数据从 $N$ 到 $1$ 的分级折叠过程与 `256 B` 对齐。
 - **难点隔离**：暂不引入 Tile 循环与多核并发。
 
 ##### 2.1.2.2 Medium 版本：单核多 Tile
@@ -104,35 +104,39 @@ float ReduceSum_CPU(const float* xCalc, int N) {
 
 #### 2.2.3 本节核心 API：片上规约 `WholeReduceSum`
 
-Ascend C 的 Vector 单元提供 `WholeReduceSum` API 替代串行 `for` 循环。它在 AI Core 内部采用树状折叠与向量转置指令，在极少时钟周期内完成片上数据的并行规约。
+Ascend C 的 Vector 单元提供 `WholeReduceSum` API 替代串行 `for` 循环。它每次按 `256 B` 的 Vector 基础粒度对一组数据做树状折叠；对于本题的 `8192` 个 FP32，需要在 UB 内分三级完成 `8192 -> 128 -> 2 -> 1` 的规约。
 
 ##### 2.2.3.1 API 接口签名
 
 ```cpp
 template <typename T>
 __aicore__ inline void WholeReduceSum(
-    const LocalTensor<T>& dstLocal,              // 输出 Tensor，物理空间须按 32 B 对齐
-    const LocalTensor<T>& srcLocal,              // 输入 Tensor，待规约的片上数据
-    const LocalTensor<uint8_t>& sharedTmpBuffer, // 硬件辅助临时 Buffer
-    const uint32_t calCount                      // 参与规约的元素个数
+    const LocalTensor<T>& dstLocal,  // 每个 repeat 的规约结果
+    const LocalTensor<T>& srcLocal,  // 输入 Tensor
+    const int32_t mask,              // 每次规约的元素个数，FP32 的完整 256 B 为 64
+    const int32_t repeatTimes,       // 重复规约次数
+    const int32_t dstRepStride,      // 相邻输出结果的步长
+    const int32_t srcBlkStride,      // 源数据块步长
+    const int32_t srcRepStride       // 相邻 repeat 的源步长
 );
 ```
 
-##### 2.2.3.2 硬件辅助空间 `sharedTmpBuffer`
+##### 2.2.3.2 三阶段规约的中间结果
 
-`WholeReduceSum` 执行时需要在 UB 中进行多轮树状折叠与转置，必须依赖额外的片上辅助空间（Scratchpad Memory）暂存中间计算结果。
-
-- **为什么使用 `uint8_t`**：该缓冲区只供硬件指令读写中间结果，不承载特定业务数据类型。配套查询 API `GetWholeReduceSumMinTmpSize` 返回的长度单位直接为字节，以 `uint8_t` 作为 Tensor 元素类型可以按 `1:1` 的字节数申请空间，避免跨类型换算与对齐逻辑。
-- **如何确定空间大小**：辅助空间大小取决于输入数据类型、输入和输出 Tensor 的形状及对齐状态，不能自行硬编码。必须在 `Init` 阶段动态查询：
+`WholeReduceSum` 的底层接口一次只处理一组 `mask` 元素，并为每个 `repeat` 写出一个局部和。因此，`8192` 个 FP32 先按 `128` 个完整的 `64` 元素组规约，得到 `128` 个局部和；随后规约为 `2` 个局部和，最后折叠成一个结果。
 
 ```cpp
-uint32_t tmpBytes = 0;
-// 动态查询计算 calCount 个元素所需的最小临时字节数
-GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
-pipe.InitBuffer(tmpBuffer, tmpBytes);
+// 第 1 阶：8192 个元素按 128 组规约，得到 128 个局部和。
+WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+
+// 第 2 阶：128 个局部和按两组规约，得到 2 个局部和。
+WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
+
+// 第 3 阶：将最后两个局部和折叠为 yLocal[0]。
+WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
 ```
 
-`GetWholeReduceSumMinTmpSize` 需要读取 `inQueueX` 和 `outQueueY` 的配置。因此在 `Init` 中必须先执行输入、输出队列的 `pipe.InitBuffer`，再调用查询接口；若顺序颠倒，`tmpBytes` 的结果不可用，临时缓冲区的初始化将失败。
+这里的 `srcRepStride = 8` 表示相邻完整 FP32 组相隔 `8` 个 `32 B` 数据块，即 `8 x 8 = 64` 个 FP32 元素。
 
 ##### 2.2.3.3 `yLocal` 的空间申请与 `32 B` 对齐
 
@@ -145,10 +149,13 @@ pipe.InitBuffer(outQueueY, 1, 32);
 // Compute 阶段：yLocal 实际包含 8 个 float32 元素。
 LocalTensor<float> xCalc = inQueueX.DeQue<float>();
 LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+LocalTensor<float> partialLocal = partialBuf.Get<float>();
+LocalTensor<float> tailLocal = tailBuf.Get<float>();
 
+WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
 // 规约结果写入 yLocal[0]；yLocal[1] 到 yLocal[7] 为 Padding。
-WholeReduceSum(yLocal, xCalc, tmpTensor, 8192);
+WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
 
 outQueueY.EnQue(yLocal);
 inQueueX.FreeTensor(xCalc);
@@ -183,10 +190,9 @@ public:
         // 必须通过 outQueueY 开辟 32 B 物理空间，即 8 个 FP32。
         pipe.InitBuffer(outQueueY, 1, 32);
 
-        // 3. 先初始化队列，再动态查询并分配 WholeReduceSum 所需临时空间。
-        uint32_t tmpBytes = 0;
-        GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
-        pipe.InitBuffer(tmpBuffer, tmpBytes);
+        // 3. 分级规约的中间结果：128 个局部和（512 B）和 2 个局部和（32 B）。
+        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 1, 32);
     }
 
     __aicore__ inline void Process() {
@@ -195,14 +201,17 @@ public:
         DataCopy(xLocal, xGm[0], this->totalLength);
         inQueueX.EnQue(xLocal);
 
-        // Stage 2: Compute - 调用 WholeReduceSum 完成片上树状规约
+        // Stage 2: Compute - 8192 -> 128 -> 2 -> 1 的分级片上规约
         LocalTensor<float> xCalc = inQueueX.DeQue<float>();
 
         // yLocal 实际包含 8 个 FP32（32 B），规约结果写入 yLocal[0]。
         LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-        LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+        LocalTensor<float> partialLocal = partialBuf.Get<float>();
+        LocalTensor<float> tailLocal = tailBuf.Get<float>();
 
-        WholeReduceSum(yLocal, xCalc, tmpTensor, this->totalLength);
+        WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+        WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
+        WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
 
         outQueueY.EnQue(yLocal);
         inQueueX.FreeTensor(xCalc);
@@ -218,7 +227,8 @@ private:
     TPipe pipe;
     TQue<QuePosition::VECIN, 1> inQueueX;
     TQue<QuePosition::VECOUT, 1> outQueueY;
-    TBuf<TPosition::VECCALC> tmpBuffer;
+    TBuf<TPosition::VECCALC> partialBuf;
+    TBuf<TPosition::VECCALC> tailBuf;
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -264,19 +274,19 @@ extern "C" void run_kernel(
 - C. 每个 AI Core 必须保留 8 个输出队列。
 - D. `float32` 在 UB 中固定占用 `32 B`。
 
-**2.2-Q2.** `GetWholeReduceSumMinTmpSize` 应在何时调用？
+**2.2-Q2.** 对 `8192` 个 FP32 做第一阶段 `WholeReduceSum` 时，正确的 `mask` 与 `repeatTimes` 是：
 
-- A. `WholeReduceSum` 执行完成之后。
-- B. 在 `InitBuffer(inQueueX, ...)` 和 `InitBuffer(outQueueY, ...)` 之前。
-- C. 输入、输出队列初始化之后，`tmpBuffer` 初始化之前。
-- D. 仅在 Host 端启动 Kernel 之后。
+- A. `mask = 1`，`repeatTimes = 8192`。
+- B. `mask = 64`，`repeatTimes = 128`。
+- C. `mask = 128`，`repeatTimes = 64`。
+- D. `mask = 8192`，`repeatTimes = 1`。
 
-**2.2-Q3.** `WholeReduceSum` 的 `sharedTmpBuffer` 使用 `LocalTensor<uint8_t>` 的主要原因是：
+**2.2-Q3.** 本节为什么还需要 `partialBuf` 与 `tailBuf` 两块 UB Buffer？
 
-- A. 规约结果必须转换为 `uint8_t`。
-- B. 临时空间按字节查询和分配，不承载业务数据类型。
-- C. `float32` 不能存储在 UB 中。
-- D. MTE 只能搬运 `uint8_t` 数据。
+- A. `WholeReduceSum` 每次为每个 repeat 产生一个局部和，`8192` 个元素需分三级收敛为一个值。
+- B. `float32` 不能直接写入输出队列。
+- C. `partialBuf` 用于让 MTE 写回 GM。
+- D. 这两块 Buffer 只用来满足双缓冲的队列深度要求。
 
 ### 2.3 Medium 关卡：单核多 Tile 循环
 
@@ -361,6 +371,8 @@ Vector 单元执行 `Add` 时，会先将 `sumLocal` 和 `yLocal` 读入矢量�
 #### 2.3.4 Medium 关卡完整 Kernel 实现
 
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include "kernel_operator.h"
 
 using namespace AscendC;
@@ -388,10 +400,9 @@ public:
         // 声明 UB 局部累加器 Buffer，按 32 B（8 个 FP32）对齐
         pipe.InitBuffer(sumBuf, 1, 32);
 
-        // 3. 先初始化队列，再动态查询 WholeReduceSum 所需辅助空间大小并初始化 TBuf
-        uint32_t tmpBytes = 0;
-        GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
-        pipe.InitBuffer(tmpBuffer, tmpBytes);
+        // 3. 每个 8192 元素 Tile 的分级规约中间结果。
+        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 1, 32);
     }
 
     __aicore__ inline void Process() {
@@ -409,10 +420,13 @@ public:
             // Stage 2: Compute - 片上规约与局部累加
             LocalTensor<float> xCalc = inQueueX.DeQue<float>();
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-            LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+            LocalTensor<float> partialLocal = partialBuf.Get<float>();
+            LocalTensor<float> tailLocal = tailBuf.Get<float>();
 
-            // 规约当前 Tile 的 8192 个元素至 yLocal[0]
-            WholeReduceSum(yLocal, xCalc, tmpTensor, this->tileLength);
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
+            WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+            WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
+            WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
 
             // 在 UB 内将当前 Tile 规约结果原址累加至 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
@@ -430,7 +444,8 @@ private:
     TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
     TQue<QuePosition::VECOUT, 1> outQueueY;
     TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
-    TBuf<TPosition::VECCALC> tmpBuffer;   // WholeReduceSum 辅助临时空间
+    TBuf<TPosition::VECCALC> partialBuf;  // 128 个一级局部和
+    TBuf<TPosition::VECCALC> tailBuf;     // 2 个二级局部和
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -440,10 +455,27 @@ private:
     uint32_t tileNum;
 };
 
-extern "C" __global__ __aicore__ void reduce_sum_medium(GM_ADDR x, GM_ADDR y) {
+extern "C" __global__ __vector__ void reduce_sum_medium_custom(GM_ADDR x, GM_ADDR y) {
     KernelReduceSumMedium op;
     op.Init(x, y, 524288);
     op.Process();
+}
+
+// TensorOJ 入口：Medium 关卡由一个逻辑 Block 完成 64 次 Tile 规约。
+extern "C" void run_kernel(
+    GM_ADDR x, const TensorGroupInfo& info_x,
+    GM_ADDR y, const TensorGroupInfo& info_y,
+    int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
+        info_x.tensors[0].dtype != 0 || info_y.tensors[0].dtype != 0 ||
+        info_x.tensors[0].shape[0] != 524288 ||
+        info_y.tensors[0].shape[0] != 1 ||
+        availableCoreNum <= 0) {
+        return;
+    }
+
+    reduce_sum_medium_custom<<<1, nullptr, stream>>>(x, y);
 }
 ```
 
@@ -560,6 +592,8 @@ SetAtomicSub(); // 或 SetAtomicNone()，取决于架构与驱动版本
 #### 2.4.4 Hard 关卡完整 Kernel 实现
 
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include "kernel_operator.h"
 
 using namespace AscendC;
@@ -586,10 +620,9 @@ public:
         pipe.InitBuffer(outQueueY, 1, 32);                              // 单 Tile 规约临时输出
         pipe.InitBuffer(sumBuf, 1, 32);                                 // UB 局部累加器
 
-        // 3. 先初始化队列，再动态查询 WholeReduceSum 所需辅助空间大小并初始化 TBuf
-        uint32_t tmpBytes = 0;
-        GetWholeReduceSumMinTmpSize(inQueueX, outQueueY, tmpBytes);
-        pipe.InitBuffer(tmpBuffer, tmpBytes);
+        // 3. 每个 8192 元素 Tile 的分级规约中间结果。
+        pipe.InitBuffer(partialBuf, 1, 128 * sizeof(float));
+        pipe.InitBuffer(tailBuf, 1, 32);
     }
 
     __aicore__ inline void Process() {
@@ -607,10 +640,13 @@ public:
             // Stage 2: Compute - 片上规约与核内累加
             LocalTensor<float> xCalc = inQueueX.DeQue<float>();
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-            LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+            LocalTensor<float> partialLocal = partialBuf.Get<float>();
+            LocalTensor<float> tailLocal = tailBuf.Get<float>();
 
-            // 规约当前 Tile 的 8192 个元素至 yLocal[0]
-            WholeReduceSum(yLocal, xCalc, tmpTensor, this->tileLength);
+            // 规约当前 Tile 的 8192 个元素至 yLocal[0]：8192 -> 128 -> 2 -> 1。
+            WholeReduceSum<float>(partialLocal, xCalc, 64, 128, 1, 1, 8);
+            WholeReduceSum<float>(tailLocal, partialLocal, 64, 2, 1, 1, 8);
+            WholeReduceSum<float>(yLocal, tailLocal, 2, 1, 1, 1, 8);
 
             // 在 UB 内原址累加至本 Core 的 sumLocal
             Add(sumLocal, sumLocal, yLocal, 8);
@@ -635,7 +671,8 @@ private:
     TQue<QuePosition::VECIN, 2> inQueueX; // 双缓冲乒乓队列
     TQue<QuePosition::VECOUT, 1> outQueueY;
     TBuf<TPosition::VECCALC> sumBuf;      // UB 局部累加器空间
-    TBuf<TPosition::VECCALC> tmpBuffer;   // WholeReduceSum 辅助临时空间
+    TBuf<TPosition::VECCALC> partialBuf;  // 128 个一级局部和
+    TBuf<TPosition::VECCALC> tailBuf;     // 2 个二级局部和
 
     GlobalTensor<float> xGm;
     GlobalTensor<float> yGm;
@@ -645,10 +682,27 @@ private:
     uint32_t tileNum;
 };
 
-extern "C" __global__ __aicore__ void reduce_sum_hard(GM_ADDR x, GM_ADDR y) {
+extern "C" __global__ __vector__ void reduce_sum_hard_custom(GM_ADDR x, GM_ADDR y) {
     KernelReduceSumHard op;
     op.Init(x, y, 16777216);
     op.Process();
+}
+
+// TensorOJ 入口：输出 y 必须由评测框架在启动前清零，供 32 个 Block 原子累加。
+extern "C" void run_kernel(
+    GM_ADDR x, const TensorGroupInfo& info_x,
+    GM_ADDR y, const TensorGroupInfo& info_y,
+    int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x.numTensors != 1 || info_y.numTensors != 1 ||
+        info_x.tensors[0].dtype != 0 || info_y.tensors[0].dtype != 0 ||
+        info_x.tensors[0].shape[0] != 16777216 ||
+        info_y.tensors[0].shape[0] != 1 ||
+        availableCoreNum <= 0) {
+        return;
+    }
+
+    reduce_sum_hard_custom<<<32, nullptr, stream>>>(x, y);
 }
 ```
 
