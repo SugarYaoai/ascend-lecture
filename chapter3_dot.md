@@ -10,7 +10,7 @@ $$
 y = \sum_{i=0}^{N-1}(x_{1,i} \times x_{2,i})
 $$
 
-它把逐元素乘法 `Mul` 与规约求和 `WholeReduceSum` 融合到同一条数据流中，并逐步处理 Core Tail、Tile Tail、Mask 掩码和多类型混合对齐等问题。
+它把逐元素乘法 `Mul` 与规约求和 `ReduceSum` 融合到同一条数据流中，并逐步处理 Core Tail、Tile Tail、Mask 掩码和多类型混合对齐等问题。
 
 ### 3.1 Easy 关卡：单类型全量数据与双重 Tail Block
 
@@ -45,7 +45,7 @@ uint32_t currentCoreLength = (blockIdx == blockNum - 1)
 
 ##### 3.1.2.2 第二重尾块：Tile Tail
 
-当前 Block 的 `currentCoreLength` 在 Tile 循环中，最后一个 Tile 的有效元素数 `actualLength` 往往不足完整 Tile，甚至不足 `32 B`。若直接对完整 Tile 执行 `Mul` 或 `WholeReduceSum`，Vector 单元可能读取 UB 尾部残留数据，导致点积结果偏差。
+当前 Block 的 `currentCoreLength` 在 Tile 循环中，最后一个 Tile 的有效元素数 `actualLength` 往往不足完整 Tile，甚至不足 `32 B`。若直接对完整 Tile 执行 `Mul` 或 `ReduceSum`，Vector 单元可能读取 UB 尾部残留数据，导致点积结果偏差。
 
 ##### 3.1.2.3 Vector Mask
 
@@ -77,7 +77,7 @@ DataCopy(x2Local, x2Gm[offset], copyLength);
 
 ##### 3.1.3.2 Tail Block 下的逐元素乘法与规约
 
-Compute 阶段先将乘法结果缓冲区清零，再用 Mask 只覆盖有效元素。这样即使 `WholeReduceSum` 按对齐后的 `copyLength` 执行，Padding 区也只包含零：
+Compute 阶段先将乘法结果缓冲区清零，再用 Mask 只覆盖有效元素。这样即使 `ReduceSum` 按对齐后的 `copyLength` 执行，Padding 区也只包含零：
 
 ```cpp
 LocalTensor<float> x1Calc = inQueueX1.DeQue<float>();
@@ -93,13 +93,17 @@ Mul(mulResult, x1Calc, x2Calc, actualLength);
 ResetMask();
 
 // 点乘结果规约至临时标量 yLocal[0]，再累加到本 Block 的局部和。
-WholeReduceSum(yLocal, mulResult, tmpTensor, copyLength);
+LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
+ReduceSum<float>(yLocal, mulResult, workLocal, copyLength);
+workQueue.FreeTensor(workLocal);
 Add(sumLocal, sumLocal, yLocal, 8);
 ```
 
 #### 3.1.4 Easy 关卡完整 Kernel 实现
 
 ```cpp
+#include <cmath>
+#include <cstdint>
 #include "kernel_operator.h"
 
 using namespace AscendC;
@@ -125,7 +129,7 @@ public:
         // 2. 映射当前 Block 的输入 GM 区间和共享输出地址。
         x1Gm.SetGlobalBuffer((__gm__ float*)x1 + coreOffset, this->coreLength);
         x2Gm.SetGlobalBuffer((__gm__ float*)x2 + coreOffset, this->coreLength);
-        yGm.SetGlobalBuffer((__gm__ float*)y, 1);
+        yGm.SetGlobalBuffer((__gm__ float*)y, 8);
 
         this->tileNum = (this->coreLength + this->tileLength - 1) / this->tileLength;
 
@@ -134,12 +138,9 @@ public:
         pipe.InitBuffer(inQueueX1, 2, tileBytes);
         pipe.InitBuffer(inQueueX2, 2, tileBytes);
         pipe.InitBuffer(outQueueY, 1, 32);
-        pipe.InitBuffer(sumBuf, 1, 32);
-        pipe.InitBuffer(mulBuf, 1, tileBytes);
-
-        uint32_t tmpBytes = 0;
-        GetWholeReduceSumMinTmpSize(inQueueX1, outQueueY, tmpBytes);
-        pipe.InitBuffer(tmpBuffer, tmpBytes);
+        pipe.InitBuffer(sumBuf, 32);
+        pipe.InitBuffer(mulBuf, tileBytes);
+        pipe.InitBuffer(workQueue, 1, tileBytes);
     }
 
     __aicore__ inline void Process() {
@@ -167,14 +168,15 @@ public:
             LocalTensor<float> x2Calc = inQueueX2.DeQue<float>();
             LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
             LocalTensor<float> mulResult = mulBuf.Get<float>();
-            LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
+            LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
 
             Duplicate(mulResult, 0.0f, copyLength);
             SetVectorMask<float>(0, actualLength);
             Mul(mulResult, x1Calc, x2Calc, actualLength);
             ResetMask();
 
-            WholeReduceSum(yLocal, mulResult, tmpTensor, copyLength);
+            ReduceSum<float>(yLocal, mulResult, workLocal, copyLength);
+            workQueue.FreeTensor(workLocal);
             Add(sumLocal, sumLocal, yLocal, 8);
 
             outQueueY.FreeTensor(yLocal);
@@ -182,10 +184,17 @@ public:
             inQueueX2.FreeTensor(x2Calc);
         }
 
-        // Stage 3: CopyOut - 各 Block 的局部和通过原子加合并至 GM。
+        // Stage 3: CopyOut - 将 VECCALC 的局部和转入 VECOUT，再原子加合并至 GM。
+        LocalTensor<float> atomicOut = outQueueY.AllocTensor<float>();
+        Duplicate(atomicOut, 0.0f, 8);
+        Add(atomicOut, atomicOut, sumLocal, 8);
+        outQueueY.EnQue(atomicOut);
+
+        atomicOut = outQueueY.DeQue<float>();
         SetAtomicAdd<float>();
-        DataCopy(yGm, sumLocal, 8);
-        SetAtomicSub();
+        DataCopy(yGm, atomicOut, 8);
+        SetAtomicNone();
+        outQueueY.FreeTensor(atomicOut);
     }
 
 private:
@@ -195,7 +204,7 @@ private:
     TQue<QuePosition::VECOUT, 1> outQueueY;
     TBuf<TPosition::VECCALC> sumBuf;
     TBuf<TPosition::VECCALC> mulBuf;
-    TBuf<TPosition::VECCALC> tmpBuffer;
+    TQue<QuePosition::VECCALC, 1> workQueue;
 
     GlobalTensor<float> x1Gm;
     GlobalTensor<float> x2Gm;
@@ -207,10 +216,31 @@ private:
     uint32_t tileNum;
 };
 
-extern "C" __global__ __aicore__ void dot_easy(GM_ADDR x1, GM_ADDR x2, GM_ADDR y) {
+extern "C" __global__ __vector__ void dot_easy_custom(GM_ADDR x1, GM_ADDR x2, GM_ADDR y) {
     KernelDotEasy op;
     op.Init(x1, x2, y, 1000003);
     op.Process();
+}
+
+extern "C" void run_kernel(
+    GM_ADDR x1, const TensorGroupInfo& info_x1,
+    GM_ADDR x2, const TensorGroupInfo& info_x2,
+    GM_ADDR y, const TensorGroupInfo& info_y,
+    int64_t availableCoreNum, aclrtStream stream)
+{
+    if (info_x1.numTensors != 1 || info_x2.numTensors != 1 || info_y.numTensors != 1 ||
+        info_x1.tensors[0].dtype != 0 || info_x2.tensors[0].dtype != 0 ||
+        info_y.tensors[0].dtype != 0 ||
+        info_x1.tensors[0].shape[0] != 1000003 ||
+        info_x2.tensors[0].shape[0] != 1000003 ||
+        info_y.tensors[0].shape[0] != 1 || availableCoreNum <= 0) {
+        return;
+    }
+
+    // 原子加目标必须从 0 开始；Runtime memset 不额外启动 Device Kernel。
+    void* outputAddr = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(y));
+    aclrtMemsetAsync(outputAddr, 32, 0, 32, stream);
+    dot_easy_custom<<<8, nullptr, stream>>>(x1, x2, y);
 }
 ```
 
@@ -236,7 +266,7 @@ extern "C" __global__ __aicore__ void dot_easy(GM_ADDR x1, GM_ADDR x2, GM_ADDR y
 
 **3.1-Q3.** 在 Tail Tile 中，为什么要在 `Mul` 前对 `mulResult` 执行 `Duplicate(..., 0.0f, copyLength)`？
 
-- A. 让 `WholeReduceSum` 自动跳过所有输入元素。
+- A. 让 `ReduceSum` 自动跳过所有输入元素。
 - B. 使两个输入张量的地址相同。
 - C. 将 Mask 未写入的 Padding 区清零，避免脏数据参与后续规约。
 - D. 将局部和立即写回 GM。
