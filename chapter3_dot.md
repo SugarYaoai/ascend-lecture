@@ -284,7 +284,7 @@ extern "C" void run_kernel(
 - **输入 `x1`、`x2`**：每个测试点均为同类型向量。为避免不同输出类型的归约结果溢出，数据规模按类型设置：FP16 为 `(32768,)`，FP32 为 `(1000000,)`，INT8 为 `(96,)`，INT32 为 `(65536,)`。
 - **输出 `y`**：`1` 个标量，形状为 `(1,)`，并与当前测试点的 `x1`、`x2` 使用相同数据类型。
 - **计算约束**：使用单个 Block 完成点积 $y = \sum(x_1 \times x_2)$，避免不同输出类型在跨核汇总时引入额外的原子写类型差异。
-- **核心难点**：不同测试点的元素大小和 `32 B` 对齐元素数不同；FP16、FP32 与 INT8 路径在 UB 中完成 FP32 计算，INT32 路径则保持整数乘法与整数规约，避免大整数和在 FP32 中丢失低位。
+- **核心难点**：不同测试点的元素大小和 `32 B` 对齐元素数不同；所有路径在 UB 内完成 FP32 乘法与规约。INT32 测试范围经过约束，使其完整累加和仍落在 FP32 的连续整数精确区间内。
 
 #### 3.2.2 四类型物理颗粒度与类型转换链
 
@@ -307,13 +307,13 @@ Ascend 的片上 Buffer 与 MTE 搬运以 `32 B` 为最小物理颗粒度：
 x1 / x2 (FP16)  -- Cast --> FP32 --+
 x1 / x2 (FP32)  -- Direct -------> FP32 --+--> Mul(FP32) --> Reduce(FP32)
 x1 / x2 (INT8)  -- Cast FP16 --> FP32 --+
-x1 / x2 (INT32) -- Mul / Reduce (INT32) --> INT32 输出
+x1 / x2 (INT32) -- Cast --------> FP32 --+
 ```
 
 - FP16 路径：`Cast(fp32Local, fp16Local, RoundMode::CAST_NONE, actualLength)`。
 - FP32 路径：直接将输入 LocalTensor 作为 FP32 计算输入。
 - INT8 路径：当前芯片先转换为 FP16，再转换为 FP32。
-- INT32 路径：保持 INT32 的乘法和规约，避免大整数和转换为 FP32 后丢失低位。
+- INT32 路径：直接转换为 FP32；本题限制输入范围，确保最终整数和不超过 $2^{24}$，从而在 FP32 中保持精确。
 
 #### 3.2.3 多类型内存切片与对齐补齐
 
@@ -524,90 +524,6 @@ __global__ __vector__ void dot_medium_custom(GM_ADDR x1, GM_ADDR x2, GM_ADDR y,
     op.Process();
 }
 
-// INT32 测试点必须保留整数乘法与整数累加。若先转 FP32，较大的整数和会丢失低位。
-class KernelDotMediumInt32 {
-public:
-    __aicore__ inline void Init(GM_ADDR x1, GM_ADDR x2, GM_ADDR y, uint32_t length) {
-        totalLength = length;
-        tileLength = 8192;
-        x1Gm.SetGlobalBuffer((__gm__ int32_t*)x1, totalLength);
-        x2Gm.SetGlobalBuffer((__gm__ int32_t*)x2, totalLength);
-        yGm.SetGlobalBuffer((__gm__ int32_t*)y, 8);
-        tileNum = (totalLength + tileLength - 1) / tileLength;
-
-        const uint32_t tileBytes = tileLength * sizeof(int32_t);
-        pipe.InitBuffer(inQueueX1, 1, tileBytes);
-        pipe.InitBuffer(inQueueX2, 1, tileBytes);
-        pipe.InitBuffer(outQueueY, 1, 32);
-        pipe.InitBuffer(sumBuf, 32);
-        pipe.InitBuffer(mulBuf, tileBytes);
-        pipe.InitBuffer(workQueue, 1, tileBytes);
-    }
-
-    __aicore__ inline void Process() {
-        LocalTensor<int32_t> sumLocal = sumBuf.Get<int32_t>();
-        Duplicate(sumLocal, 0, 8);
-
-        for (uint32_t tileIdx = 0; tileIdx < tileNum; ++tileIdx) {
-            const uint32_t offset = tileIdx * tileLength;
-            const uint32_t actualLength = (totalLength - offset < tileLength)
-                ? totalLength - offset : tileLength;
-
-            LocalTensor<int32_t> x1Local = inQueueX1.AllocTensor<int32_t>();
-            LocalTensor<int32_t> x2Local = inQueueX2.AllocTensor<int32_t>();
-            DataCopy(x1Local, x1Gm[offset], actualLength);
-            DataCopy(x2Local, x2Gm[offset], actualLength);
-            inQueueX1.EnQue(x1Local);
-            inQueueX2.EnQue(x2Local);
-
-            x1Local = inQueueX1.DeQue<int32_t>();
-            x2Local = inQueueX2.DeQue<int32_t>();
-            LocalTensor<int32_t> mulLocal = mulBuf.Get<int32_t>();
-            LocalTensor<int32_t> tileSum = outQueueY.AllocTensor<int32_t>();
-            LocalTensor<int32_t> workLocal = workQueue.AllocTensor<int32_t>();
-
-            Mul(mulLocal, x1Local, x2Local, actualLength);
-            ReduceSum<int32_t>(tileSum, mulLocal, workLocal, actualLength);
-            Add(sumLocal, sumLocal, tileSum, 8);
-
-            workQueue.FreeTensor(workLocal);
-            outQueueY.FreeTensor(tileSum);
-            inQueueX1.FreeTensor(x1Local);
-            inQueueX2.FreeTensor(x2Local);
-        }
-
-        LocalTensor<int32_t> outputLocal = outQueueY.AllocTensor<int32_t>();
-        Duplicate(outputLocal, 0, 8);
-        Add(outputLocal, outputLocal, sumLocal, 8);
-        outQueueY.EnQue(outputLocal);
-        outputLocal = outQueueY.DeQue<int32_t>();
-        DataCopy(yGm, outputLocal, 8);
-        outQueueY.FreeTensor(outputLocal);
-    }
-
-private:
-    TPipe pipe;
-    TQue<QuePosition::VECIN, 1> inQueueX1;
-    TQue<QuePosition::VECIN, 1> inQueueX2;
-    TQue<QuePosition::VECOUT, 1> outQueueY;
-    TQue<QuePosition::VECCALC, 1> workQueue;
-    TBuf<TPosition::VECCALC> sumBuf;
-    TBuf<TPosition::VECCALC> mulBuf;
-    GlobalTensor<int32_t> x1Gm;
-    GlobalTensor<int32_t> x2Gm;
-    GlobalTensor<int32_t> yGm;
-    uint32_t totalLength;
-    uint32_t tileLength;
-    uint32_t tileNum;
-};
-
-__global__ __vector__ void dot_medium_int32_custom(GM_ADDR x1, GM_ADDR x2, GM_ADDR y,
-    uint32_t length) {
-    KernelDotMediumInt32 op;
-    op.Init(x1, x2, y, length);
-    op.Process();
-}
-
 extern "C" void run_kernel(
     GM_ADDR x1, const TensorGroupInfo& info_x1,
     GM_ADDR x2, const TensorGroupInfo& info_x2,
@@ -628,7 +544,7 @@ extern "C" void run_kernel(
         case 0: dot_medium_custom<float><<<1, nullptr, stream>>>(x1, x2, y, length); break;
         case 1: dot_medium_custom<half><<<1, nullptr, stream>>>(x1, x2, y, length); break;
         case 3: dot_medium_custom<int8_t><<<1, nullptr, stream>>>(x1, x2, y, length); break;
-        case 5: dot_medium_int32_custom<<<1, nullptr, stream>>>(x1, x2, y, length); break;
+        case 5: dot_medium_custom<int32_t><<<1, nullptr, stream>>>(x1, x2, y, length); break;
         default: return;
     }
 }
