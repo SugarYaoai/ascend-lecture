@@ -343,133 +343,39 @@ pipe.InitBuffer(x2Int32Buf, 1, tileLength * sizeof(int32_t));
 pipe.InitBuffer(x2Fp32Buf, 1, tileLength * sizeof(float));
 ```
 
-#### 3.2.4 Medium 关卡完整 Kernel 实现
+#### 3.2.4 Medium 关卡 TensorOJ 提交模板
 
 ```cpp
+#include <cmath>
 #include "kernel_operator.h"
 
-using namespace AscendC;
+/*
+ * Dot Medium Kernel — Ascend C Direct Invocation
+ * This file is #included — do NOT add main(), #pragma once, or include guards.
+ *
+ * TensorGroupInfo / TensorInfo (predefined):
+ *   struct TensorInfo { const int64_t* shape; int64_t numDims; int32_t dtype; };
+ *   struct TensorGroupInfo { const TensorInfo* tensors; int64_t numTensors; };
+ *   dtype: 0=fp32 1=fp16 2=bf16 3=int8 4=int16 5=int32 6=int64 7=uint8
+ *          8=uint16 9=uint32 10=uint64 11=bool
+ *   Usage: info_x1.tensors[0].shape[0]  // first dimension of x1
+ *
+ * __global__ __vector__ void dot_medium_custom(...)
+ * {
+ *     // TODO: implement the same-type FP16 / FP32 / INT8 / INT32 paths.
+ *     // Available APIs: AscendC::TPipe, AscendC::TQue, AscendC::DataCopy,
+ *     // AscendC::Cast, AscendC::Mul, AscendC::ReduceSum, ...
+ * }
+ */
 
-class KernelDotMedium {
-public:
-    __aicore__ inline KernelDotMedium() {}
-
-    __aicore__ inline void Init(GM_ADDR x1, GM_ADDR x2, GM_ADDR y, uint32_t totalLength) {
-        this->totalLength = totalLength; // 1,000,000
-        this->tileLength = 8192;         // 单 Tile 最大元素数，必须是 32 的倍数
-
-        // 1. Core Tail：按 32 元素对齐，兼顾 INT8、FP16 与 FP32。
-        uint32_t blockNum = GetBlockNum();
-        uint32_t blockIdx = GetBlockIdx();
-        uint32_t baseCoreLength = (this->totalLength / blockNum) & ~31U;
-        uint32_t coreOffset = blockIdx * baseCoreLength;
-        this->coreLength = (blockIdx == blockNum - 1)
-            ? (this->totalLength - coreOffset)
-            : baseCoreLength;
-
-        x1Gm.SetGlobalBuffer((__gm__ half*)x1 + coreOffset, this->coreLength);
-        x2Gm.SetGlobalBuffer((__gm__ int8_t*)x2 + coreOffset, this->coreLength);
-        yGm.SetGlobalBuffer((__gm__ float*)y, 1);
-
-        this->tileNum = (this->coreLength + this->tileLength - 1) / this->tileLength;
-
-        // 2. 原始输入队列按照各自元素大小分配。
-        pipe.InitBuffer(inQueueX1, 2, this->tileLength * sizeof(half));
-        pipe.InitBuffer(inQueueX2, 2, this->tileLength * sizeof(int8_t));
-        pipe.InitBuffer(outQueueY, 1, 32);
-        pipe.InitBuffer(sumBuf, 1, 32);
-
-        // Cast 后的中间结果按 FP32 或 INT32 大小分配。
-        pipe.InitBuffer(x1Fp32Buf, 1, this->tileLength * sizeof(float));
-        pipe.InitBuffer(x2Int32Buf, 1, this->tileLength * sizeof(int32_t));
-        pipe.InitBuffer(x2Fp32Buf, 1, this->tileLength * sizeof(float));
-        pipe.InitBuffer(mulBuf, 1, this->tileLength * sizeof(float));
-
-        uint32_t tmpBytes = 0;
-        GetWholeReduceSumMinTmpSize(x1Fp32Buf, outQueueY, tmpBytes);
-        pipe.InitBuffer(tmpBuffer, tmpBytes);
-    }
-
-    __aicore__ inline void Process() {
-        LocalTensor<float> sumLocal = sumBuf.Get<float>();
-        Duplicate(sumLocal, 0.0f, 8);
-
-        for (uint32_t i = 0; i < this->tileNum; ++i) {
-            uint32_t offset = i * this->tileLength;
-            uint32_t actualLength = this->coreLength - offset;
-            if (actualLength > this->tileLength) {
-                actualLength = this->tileLength;
-            }
-            uint32_t copyLength = (actualLength + 31) & ~31U;
-
-            // Stage 1: CopyIn - 搬运 FP16 的 x1 与 INT8 的 x2。
-            LocalTensor<half> x1Local = inQueueX1.AllocTensor<half>();
-            LocalTensor<int8_t> x2Local = inQueueX2.AllocTensor<int8_t>();
-            DataCopy(x1Local, x1Gm[offset], copyLength);
-            DataCopy(x2Local, x2Gm[offset], copyLength);
-            inQueueX1.EnQue(x1Local);
-            inQueueX2.EnQue(x2Local);
-
-            // Stage 2: Compute - Cast、Mask 乘法与片上规约。
-            LocalTensor<half> x1Calc = inQueueX1.DeQue<half>();
-            LocalTensor<int8_t> x2Calc = inQueueX2.DeQue<int8_t>();
-            LocalTensor<float> x1Fp32 = x1Fp32Buf.Get<float>();
-            LocalTensor<int32_t> x2Int32 = x2Int32Buf.Get<int32_t>();
-            LocalTensor<float> x2Fp32 = x2Fp32Buf.Get<float>();
-            LocalTensor<float> mulResult = mulBuf.Get<float>();
-            LocalTensor<float> yLocal = outQueueY.AllocTensor<float>();
-            LocalTensor<uint8_t> tmpTensor = tmpBuffer.Get<uint8_t>();
-
-            Cast(x1Fp32, x1Calc, CastMode::CAST_NONE, copyLength);
-            Cast(x2Int32, x2Calc, CastMode::CAST_NONE, copyLength);
-            Cast(x2Fp32, x2Int32, CastMode::CAST_NONE, copyLength);
-
-            // 清零 Padding 区，再通过 Mask 仅计算有效元素。
-            Duplicate(mulResult, 0.0f, copyLength);
-            SetVectorMask<float>(0, actualLength);
-            Mul(mulResult, x1Fp32, x2Fp32, actualLength);
-            ResetMask();
-
-            WholeReduceSum(yLocal, mulResult, tmpTensor, copyLength);
-            Add(sumLocal, sumLocal, yLocal, 8);
-
-            outQueueY.FreeTensor(yLocal);
-            inQueueX1.FreeTensor(x1Calc);
-            inQueueX2.FreeTensor(x2Calc);
-        }
-
-        // Stage 3: CopyOut - 多核原子加写回 FP32 GM。
-        SetAtomicAdd<float>();
-        DataCopy(yGm, sumLocal, 8);
-        SetAtomicSub();
-    }
-
-private:
-    TPipe pipe;
-    TQue<QuePosition::VECIN, 2> inQueueX1;
-    TQue<QuePosition::VECIN, 2> inQueueX2;
-    TQue<QuePosition::VECOUT, 1> outQueueY;
-    TBuf<TPosition::VECCALC> sumBuf;
-    TBuf<TPosition::VECCALC> x1Fp32Buf;
-    TBuf<TPosition::VECCALC> x2Int32Buf;
-    TBuf<TPosition::VECCALC> x2Fp32Buf;
-    TBuf<TPosition::VECCALC> mulBuf;
-    TBuf<TPosition::VECCALC> tmpBuffer;
-
-    GlobalTensor<half> x1Gm;
-    GlobalTensor<int8_t> x2Gm;
-    GlobalTensor<float> yGm;
-
-    uint32_t totalLength;
-    uint32_t coreLength;
-    uint32_t tileLength;
-    uint32_t tileNum;
-};
-
-extern "C" __global__ __aicore__ void dot_medium(GM_ADDR x1, GM_ADDR x2, GM_ADDR y) {
-    KernelDotMedium op;
-    op.Init(x1, x2, y, 1000000);
-    op.Process();
+extern "C" void run_kernel(
+    GM_ADDR x1, const TensorGroupInfo& info_x1,
+    GM_ADDR x2, const TensorGroupInfo& info_x2,
+    GM_ADDR y, const TensorGroupInfo& info_y,
+    int64_t availableCoreNum, aclrtStream stream)
+{
+    // TODO: inspect the common dtype and shape, then launch the matching kernel.
+    // dot_medium_custom<<<blockNum, nullptr, stream>>>(...);
 }
 ```
 
