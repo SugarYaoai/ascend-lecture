@@ -306,13 +306,13 @@ Ascend 的片上 Buffer 与 MTE 搬运以 `32 B` 为最小物理颗粒度：
 ```text
 x1 / x2 (FP16)  -- Cast --> FP32 --+
 x1 / x2 (FP32)  -- Direct -------> FP32 --+--> Mul(FP32) --> Reduce(FP32)
-x1 / x2 (INT8)  -- Cast INT32 --> FP32 --+
+x1 / x2 (INT8)  -- Cast FP16 --> FP32 --+
 x1 / x2 (INT32) -- Cast --------> FP32 --+
 ```
 
-- FP16 路径：`Cast(fp32Local, fp16Local, CastMode::CAST_NONE, actualLength)`。
+- FP16 路径：`Cast(fp32Local, fp16Local, RoundMode::CAST_NONE, actualLength)`。
 - FP32 路径：直接将输入 LocalTensor 作为 FP32 计算输入。
-- INT8 路径：先转换为 INT32，再转换为 FP32。
+- INT8 路径：当前芯片先转换为 FP16，再转换为 FP32。
 - INT32 路径：直接转换为 FP32。
 
 #### 3.2.3 多类型内存切片与对齐补齐
@@ -339,11 +339,11 @@ uint32_t copyLength = (actualLength + 31) & ~31U;
 
 ```cpp
 pipe.InitBuffer(x1Fp32Buf, 1, tileLength * sizeof(float));
-pipe.InitBuffer(x2Int32Buf, 1, tileLength * sizeof(int32_t));
+pipe.InitBuffer(x2Fp16Buf, 1, tileLength * sizeof(half));
 pipe.InitBuffer(x2Fp32Buf, 1, tileLength * sizeof(float));
 ```
 
-#### 3.2.4 Medium 关卡 TensorOJ 提交模板
+#### 3.2.4 Medium 关卡完整 Kernel 实现
 
 ```cpp
 #include <cmath>
@@ -368,26 +368,35 @@ using namespace AscendC;
 template <typename T>
 struct InputCast {
     __aicore__ static inline void Run(const LocalTensor<float>& dst,
-        const LocalTensor<T>& src, const LocalTensor<int32_t>&, uint32_t count) {
+        const LocalTensor<T>& src, const LocalTensor<half>&, uint32_t count) {
         Cast(dst, src, RoundMode::CAST_NONE, count);
     }
 };
 
-// INT8 先提升为 INT32，再转换为 FP32，和本节的类型转换链保持一致。
+template <>
+struct InputCast<float> {
+    __aicore__ static inline void Run(const LocalTensor<float>& dst,
+        const LocalTensor<float>& src, const LocalTensor<half>&, uint32_t count) {
+        Duplicate(dst, 0.0f, count);
+        Add(dst, dst, src, count);
+    }
+};
+
+// 当前硬件不支持 INT8 直接转换为 INT32 或 FP32，需经 FP16 过渡。
 template <>
 struct InputCast<int8_t> {
     __aicore__ static inline void Run(const LocalTensor<float>& dst,
-        const LocalTensor<int8_t>& src, const LocalTensor<int32_t>& int32Buf,
+        const LocalTensor<int8_t>& src, const LocalTensor<half>& halfBuf,
         uint32_t count) {
-        Cast(int32Buf, src, RoundMode::CAST_NONE, count);
-        Cast(dst, int32Buf, RoundMode::CAST_NONE, count);
+        Cast(halfBuf, src, RoundMode::CAST_NONE, count);
+        Cast(dst, halfBuf, RoundMode::CAST_NONE, count);
     }
 };
 
 template <typename T>
 struct OutputCast {
     __aicore__ static inline void Run(const LocalTensor<T>& dst,
-        const LocalTensor<float>& src, uint32_t count) {
+        const LocalTensor<float>& src, const LocalTensor<half>&, uint32_t count) {
         Cast(dst, src, RoundMode::CAST_NONE, count);
     }
 };
@@ -395,9 +404,19 @@ struct OutputCast {
 template <>
 struct OutputCast<float> {
     __aicore__ static inline void Run(const LocalTensor<float>& dst,
-        const LocalTensor<float>& src, uint32_t count) {
+        const LocalTensor<float>& src, const LocalTensor<half>&, uint32_t count) {
         Duplicate(dst, 0.0f, count);
         Add(dst, dst, src, count);
+    }
+};
+
+template <>
+struct OutputCast<int8_t> {
+    __aicore__ static inline void Run(const LocalTensor<int8_t>& dst,
+        const LocalTensor<float>& src, const LocalTensor<half>& halfBuf,
+        uint32_t count) {
+        Cast(halfBuf, src, RoundMode::CAST_NONE, count);
+        Cast(dst, halfBuf, RoundMode::CAST_NONE, count);
     }
 };
 
@@ -421,7 +440,7 @@ public:
         pipe.InitBuffer(sumBuf, 32);
         pipe.InitBuffer(x1Fp32Buf, fp32Bytes);
         pipe.InitBuffer(x2Fp32Buf, fp32Bytes);
-        pipe.InitBuffer(int32Buf, tileLength * sizeof(int32_t));
+        pipe.InitBuffer(halfBuf, tileLength * sizeof(half));
         pipe.InitBuffer(mulBuf, fp32Bytes);
         pipe.InitBuffer(workQueue, 1, fp32Bytes);
     }
@@ -447,13 +466,13 @@ public:
             x2Local = inQueueX2.DeQue<T>();
             LocalTensor<float> x1Fp32 = x1Fp32Buf.Get<float>();
             LocalTensor<float> x2Fp32 = x2Fp32Buf.Get<float>();
-            LocalTensor<int32_t> castInt32 = int32Buf.Get<int32_t>();
+            LocalTensor<half> castHalf = halfBuf.Get<half>();
             LocalTensor<float> mulLocal = mulBuf.Get<float>();
             LocalTensor<float> tileSum = outQueueY.AllocTensor<float>();
             LocalTensor<float> workLocal = workQueue.AllocTensor<float>();
 
-            InputCast<T>::Run(x1Fp32, x1Local, castInt32, actualLength);
-            InputCast<T>::Run(x2Fp32, x2Local, castInt32, actualLength);
+            InputCast<T>::Run(x1Fp32, x1Local, castHalf, actualLength);
+            InputCast<T>::Run(x2Fp32, x2Local, castHalf, actualLength);
             Duplicate(mulLocal, 0.0f, reduceLength);
             SetVectorMask<float>(0, actualLength);
             Mul(mulLocal, x1Fp32, x2Fp32, actualLength);
@@ -468,8 +487,10 @@ public:
         }
 
         LocalTensor<T> outputLocal = outQueueY.AllocTensor<T>();
+        LocalTensor<half> outputHalf = halfBuf.Get<half>();
         const uint32_t outputCount = 32 / sizeof(T);
-        OutputCast<T>::Run(outputLocal, sumLocal, outputCount);
+        // sumLocal 是 32 B（8 个 FP32）；转换时只读取这 8 个有效槽位。
+        OutputCast<T>::Run(outputLocal, sumLocal, outputHalf, 8);
         outQueueY.EnQue(outputLocal);
         outputLocal = outQueueY.DeQue<T>();
         DataCopy(yGm, outputLocal, outputCount);
@@ -485,7 +506,7 @@ private:
     TBuf<TPosition::VECCALC> sumBuf;
     TBuf<TPosition::VECCALC> x1Fp32Buf;
     TBuf<TPosition::VECCALC> x2Fp32Buf;
-    TBuf<TPosition::VECCALC> int32Buf;
+    TBuf<TPosition::VECCALC> halfBuf;
     TBuf<TPosition::VECCALC> mulBuf;
     GlobalTensor<T> x1Gm;
     GlobalTensor<T> x2Gm;
@@ -542,16 +563,16 @@ extern "C" void run_kernel(
 - C. Vector 单元只能计算 32 个元素。
 - D. `ReduceSum` 只能接收 32 个元素。
 
-**3.2-Q2.** 为什么 INT8 路径可以先转换为 INT32，再转换为 FP32？
+**3.2-Q2.** 为什么 INT8 路径需要先转换为 FP16，再转换为 FP32？
 
-- A. 该计算链不直接支持 INT8 到 FP32 的 Vector Cast。
+- A. 该计算链不直接支持 INT8 到 FP32 的 Vector Cast，而 INT8 到 FP16 与 FP16 到 FP32 均受支持。
 - B. INT8 数据不能放入 UB。
-- C. FP16 只能与 INT32 相乘。
-- D. INT32 占用空间比 INT8 更小。
+- C. FP16 只能与 INT8 相乘。
+- D. FP16 占用空间比 INT8 更小。
 
-**3.2-Q3.** INT8 路径中的 `int32Buf` 空间应按什么类型的字节数分配？
+**3.2-Q3.** INT8 路径中的 `halfBuf` 空间应按什么类型的字节数分配？
 
 - A. `int8_t`，因为原始输入是 INT8。
-- B. `half`，因为另一个输入是 FP16。
-- C. `int32_t`，因为该 Buffer 保存 INT8 Cast 后的中间结果。
+- B. `half`，因为该 Buffer 保存 INT8 Cast 后的中间结果。
+- C. `int32_t`，因为最终计算使用 FP32。
 - D. `float`，因为最终输出是 FP32。
