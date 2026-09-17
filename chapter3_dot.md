@@ -369,7 +369,7 @@ template <typename T>
 struct InputCast {
     __aicore__ static inline void Run(const LocalTensor<float>& dst,
         const LocalTensor<T>& src, const LocalTensor<int32_t>&, uint32_t count) {
-        Cast(dst, src, CastMode::CAST_NONE, count);
+        Cast(dst, src, RoundMode::CAST_NONE, count);
     }
 };
 
@@ -379,8 +379,8 @@ struct InputCast<int8_t> {
     __aicore__ static inline void Run(const LocalTensor<float>& dst,
         const LocalTensor<int8_t>& src, const LocalTensor<int32_t>& int32Buf,
         uint32_t count) {
-        Cast(int32Buf, src, CastMode::CAST_NONE, count);
-        Cast(dst, int32Buf, CastMode::CAST_NONE, count);
+        Cast(int32Buf, src, RoundMode::CAST_NONE, count);
+        Cast(dst, int32Buf, RoundMode::CAST_NONE, count);
     }
 };
 
@@ -388,7 +388,7 @@ template <typename T>
 struct OutputCast {
     __aicore__ static inline void Run(const LocalTensor<T>& dst,
         const LocalTensor<float>& src, uint32_t count) {
-        Cast(dst, src, CastMode::CAST_NONE, count);
+        Cast(dst, src, RoundMode::CAST_NONE, count);
     }
 };
 
