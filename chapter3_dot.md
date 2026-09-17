@@ -574,7 +574,9 @@ public:
             Duplicate(current, 0, reduceLength);
             Mul(current, x1Local, x2Local, actualLength);
 
-            for (uint32_t active = reduceLength; active > 1; active >>= 1) {
+            // Vector Add 的两个源地址都必须保持 32 B 对齐。对 INT32 而言，
+            // active 降至 8 后右半段偏移不足 32 B，最后 8 -> 1 改由 Scalar 完成。
+            for (uint32_t active = reduceLength; active > 8; active >>= 1) {
                 const uint32_t halfLength = active >> 1;
                 Add(next, current, current[halfLength], halfLength);
                 LocalTensor<int32_t> temp = current;
@@ -582,12 +584,17 @@ public:
                 next = temp;
             }
 
-            // current[0] 是当前 Tile 的精确整数和。
-            Add(sumLocal, sumLocal, current, 8);
+            PipeBarrier<PIPE_ALL>();
+            int32_t tileSum = 0;
+            for (uint32_t index = 0; index < 8; ++index) {
+                tileSum += current.GetValue(index);
+            }
+            sumLocal.SetValue(0, sumLocal.GetValue(0) + tileSum);
             inQueueX1.FreeTensor(x1Local);
             inQueueX2.FreeTensor(x2Local);
         }
 
+        PipeBarrier<PIPE_ALL>();
         LocalTensor<int32_t> outputLocal = outQueueY.AllocTensor<int32_t>();
         Duplicate(outputLocal, 0, 8);
         Add(outputLocal, outputLocal, sumLocal, 8);
