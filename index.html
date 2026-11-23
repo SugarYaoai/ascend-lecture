@@ -857,6 +857,8 @@
   </style>
   <script>
     function setupDeck(){
+      const fifthHeading=[...content.querySelectorAll('h3')].find(h=>/^1\.5\s/.test(h.textContent.trim()));
+      if(fifthHeading){const anchor=document.createElement('span');anchor.id='lesson-1-5';fifthHeading.before(anchor);}
       const fourthHeading=[...content.querySelectorAll('h3')].find(h=>/^1\.4\s/.test(h.textContent.trim()));
       if(fourthHeading){const anchor=document.createElement('span');anchor.id='lesson-1-4';fourthHeading.before(anchor);}
       const thirdHeading=[...content.querySelectorAll('h3')].find(h=>/^1\.3\s/.test(h.textContent.trim()));
