@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.5.4 串行 Tile 循环中的硬件等待</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .slide-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部固定标头（零切换抖动） */
+    .ppt-header {
+      height: 70px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #ffffff;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(16px, 1.35vw, 19px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 5px 13px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .slide-title {
+      font-size: clamp(21px, 2.05vw, 27px);
+      font-weight: 800;
+      color: #0f172a;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .slide-subtitle {
+      font-size: clamp(15.5px, 1.32vw, 18.5px);
+      font-weight: 700;
+      color: #0284c7;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      height: 34px;
+      padding: 0 11px;
+      border-radius: 7px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 14.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #334155;
+      min-width: 48px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片页面容器（严格顶部对齐，绝不纵向拉伸） */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      flex: 1;
+      padding: 18px 28px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 行内代码胶囊 */
+    .inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9em;
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 1px 7px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .inline-code.amber {
+      color: #b45309;
+      background: #fef3c7;
+      border-color: #fcd34d;
+    }
+
+    .inline-code.teal {
+      color: #0f766e;
+      background: #ccfbf1;
+      border-color: #5eead4;
+    }
+
+    /* ================= 第 1 页：硬件独立前提横幅 + 串行流水线图 + 双瓶颈卡 ================= */
+    .premise-banner {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 5px solid #0284c7;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: clamp(16.5px, 1.48vw, 20.5px);
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.46;
+      flex-shrink: 0;
+    }
+
+    /* 串行执行流与硬件空转可视化卡片 */
+    .pipeline-diagram-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 14px 18px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    .diagram-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .diagram-badge {
+      font-size: clamp(14.5px, 1.2vw, 17px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 3px 12px;
+      border-radius: 7px;
+    }
+
+    .legend-group {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: clamp(13.5px, 1.12vw, 15.5px);
+      font-weight: 700;
+      color: #475569;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 3px;
+    }
+
+    .legend-dot.mte { background: #0284c7; }
+    .legend-dot.vec { background: #0f766e; }
+    .legend-dot.idle { background: #fef3c7; border: 1px solid #f59e0b; }
+
+    /* 时间轴阶段矩阵 */
+    .timeline-matrix {
+      display: grid;
+      grid-template-columns: 122px 1fr;
+      gap: 10px 14px;
+      align-items: center;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 11px;
+      padding: 12px 14px;
+    }
+
+    .row-label {
+      font-size: clamp(14.5px, 1.22vw, 17px);
+      font-weight: 800;
+      color: #334155;
+      text-align: right;
+      padding-right: 4px;
+      white-space: nowrap;
+    }
+
+    .stage-track {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .stage-box {
+      flex: 1;
+      border-radius: 9px;
+      padding: 8px 10px;
+      text-align: center;
+      font-size: clamp(14.5px, 1.24vw, 17.5px);
+      font-weight: 800;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .stage-box.mte {
+      background: #eff6ff;
+      border: 1.5px solid #60a5fa;
+      color: #1e3a8a;
+    }
+
+    .stage-box.vec {
+      background: #f0fdfa;
+      border: 1.5px solid #2dd4bf;
+      color: #0f766e;
+    }
+
+    .stage-box.next {
+      background: #f1f5f9;
+      border: 1.5px dashed #94a3b8;
+      color: #334155;
+      flex: 0.92;
+    }
+
+    .stage-arrow {
+      font-size: 16px;
+      font-weight: 900;
+      color: #64748b;
+      flex-shrink: 0;
+    }
+
+    /* 硬件占用状态行 */
+    .hw-bar {
+      flex: 1;
+      border-radius: 8px;
+      padding: 6px 8px;
+      text-align: center;
+      font-size: clamp(13.5px, 1.14vw, 15.8px);
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .hw-bar.active-mte {
+      background: #0284c7;
+      color: #ffffff;
+    }
+
+    .hw-bar.active-vec {
+      background: #0f766e;
+      color: #ffffff;
+    }
+
+    .hw-bar.idle {
+      background: #fffbeb;
+      border: 1.5px dashed #f59e0b;
+      color: #b45309;
+    }
+
+    .hw-bar.next-idle {
+      background: #f8fafc;
+      border: 1.5px dashed #cbd5e1;
+      color: #64748b;
+      flex: 0.92;
+    }
+
+    .arrow-spacer {
+      width: 16px;
+      flex-shrink: 0;
+    }
+
+    /* 双栏硬件互等卡片（严格 align-items: start） */
+    .wait-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .wait-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-top: 4px solid #0284c7;
+      border-radius: 14px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 10px;
+    }
+
+    .wait-card.mte-wait {
+      border-top-color: #0f766e;
+    }
+
+    .wait-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .wait-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 16px;
+      font-weight: 800;
+      color: #ffffff;
+      background: #0284c7;
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .wait-card.mte-wait .wait-num {
+      background: #0f766e;
+    }
+
+    .wait-title {
+      font-size: clamp(18.5px, 1.65vw, 22.5px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .wait-desc {
+      font-size: clamp(16px, 1.4vw, 19.2px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+
+    /* ================= 第 2 页：单缓冲区数据竞争 vs 双缓冲演进 ================= */
+    .grid-2-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .cause-card {
+      background: #fffbeb;
+      border: 1.5px solid #f59e0b;
+      border-top: 5px solid #d97706;
+      border-radius: 14px;
+      padding: 18px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .sol-card {
+      background: #f0fdfa;
+      border: 1.5px solid #5eead4;
+      border-top: 5px solid #0f766e;
+      border-radius: 14px;
+      padding: 18px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .pill-tag {
+      align-self: flex-start;
+      font-size: clamp(15px, 1.25vw, 17.5px);
+      font-weight: 800;
+      padding: 4px 13px;
+      border-radius: 8px;
+    }
+
+    .cause-card .pill-tag {
+      color: #b45309;
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+    }
+
+    .sol-card .pill-tag {
+      color: #0f766e;
+      background: #ccfbf1;
+      border: 1px solid #5eead4;
+    }
+
+    .card-main-title {
+      font-size: clamp(20px, 1.8vw, 24.5px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.32;
+    }
+
+    .card-body-text {
+      font-size: clamp(16px, 1.4vw, 19px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+
+    /* 冲突示意图盒子 */
+    .diagram-box {
+      background: #ffffff;
+      border: 1px solid #fcd34d;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .sol-card .diagram-box {
+      border-color: #99f6e4;
+    }
+
+    .conflict-actors {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .actor-chip {
+      border-radius: 9px;
+      padding: 9px 11px;
+      text-align: center;
+      font-size: clamp(14.5px, 1.22vw, 17px);
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .actor-chip.vec-read {
+      background: #eff6ff;
+      border: 1.5px solid #93c5fd;
+      color: #1e3a8a;
+    }
+
+    .actor-chip.mte-write {
+      background: #fef2f2;
+      border: 1.5px solid #fca5a5;
+      color: #b91c1c;
+    }
+
+    .shared-ub-target {
+      background: #fef2f2;
+      border: 2px dashed #ef4444;
+      border-radius: 10px;
+      padding: 10px 14px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .ub-buf-names {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(15.5px, 1.32vw, 18px);
+      font-weight: 800;
+      color: #0f172a;
+    }
+
+    .ub-conflict-alert {
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 800;
+      color: #dc2626;
+    }
+
+    /* 双缓冲对比时间线 */
+    .compare-row {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .compare-label {
+      font-size: clamp(13.5px, 1.12vw, 15.5px);
+      font-weight: 800;
+      color: #475569;
+    }
+
+    .compare-label.good {
+      color: #0f766e;
+    }
+
+    .mini-track {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mini-seg {
+      flex: 1;
+      border-radius: 7px;
+      padding: 6px 8px;
+      text-align: center;
+      font-size: clamp(13.5px, 1.12vw, 15.5px);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .mini-seg.serial-mte {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      color: #334155;
+    }
+
+    .mini-seg.serial-vec {
+      background: #e2e8f0;
+      border: 1px solid #94a3b8;
+      color: #1e293b;
+    }
+
+    .pingpong-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .pp-lane {
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-align: center;
+      font-size: clamp(14px, 1.18vw, 16.5px);
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .pp-lane.buf0 {
+      background: #eff6ff;
+      border: 1.5px solid #60a5fa;
+      color: #1e3a8a;
+    }
+
+    .pp-lane.buf1 {
+      background: #ccfbf1;
+      border: 1.5px solid #14b8a6;
+      color: #0f766e;
+    }
+
+    .bottom-summary-strip {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 5px solid #0f766e;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: clamp(16px, 1.4vw, 19px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.45;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="section-pill">1.5.4</span>
+        <div class="title-group">
+          <h1 class="slide-title">串行 Tile 循环中的硬件等待</h1>
+          <span id="slideSubtitle" class="slide-subtitle">1.5.4.1 搬运与计算串行：Vector 单元与 MTE 引擎互等</span>
+        </div>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">上一页</button>
+        <span id="pageIndicator" class="page-indicator">1 / 2</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">下一页</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页 (1 / 2)：1.5.4.1 搬运与计算串行：Vector 单元与 MTE 引擎互等 -->
+    <section id="slide-1" class="slide active">
+      <!-- 核心硬件独立前提横幅 -->
+      <div class="premise-banner">
+        在 AI Core 中，<strong>MTE 搬运引擎</strong>与 <strong>Vector 计算单元</strong>是相互独立的硬件；但每阶段后的 <span class="inline-code">PipeBarrier&lt;PIPE_ALL&gt;()</span> 强制所有步骤按严格串行顺序推进：
+      </div>
+
+      <!-- 串行执行流与硬件利用率可视化图示卡片 -->
+      <article class="pipeline-diagram-card">
+        <div class="diagram-header-row">
+          <span class="diagram-badge">串行 Tile 流水执行时间轴</span>
+          <div class="legend-group">
+            <span class="legend-item"><span class="legend-dot mte"></span>MTE 引擎工作</span>
+            <span class="legend-item"><span class="legend-dot vec"></span>Vector 单元工作</span>
+            <span class="legend-item"><span class="legend-dot idle"></span>硬件空转等待气泡</span>
+          </div>
+        </div>
+
+        <div class="timeline-matrix">
+          <!-- 第 1 行：阶段序列 -->
+          <div class="row-label">执行阶段</div>
+          <div class="stage-track">
+            <div class="stage-box mte">Tile 0: [ MTE2 搬入 ]</div>
+            <span class="stage-arrow">→</span>
+            <div class="stage-box vec">Tile 0: [ Vector 计算 ]</div>
+            <span class="stage-arrow">→</span>
+            <div class="stage-box mte">Tile 0: [ MTE3 写回 ]</div>
+            <span class="stage-arrow">→</span>
+            <div class="stage-box next">Tile 1: [ MTE2 搬入 ] ...</div>
+          </div>
+
+          <!-- 第 2 行：MTE 引擎状态 -->
+          <div class="row-label">MTE 引擎</div>
+          <div class="stage-track">
+            <div class="hw-bar active-mte">忙碌（GM → UB）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar idle">空闲等待（无法预读 Tile 1）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar active-mte">忙碌（UB → GM）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar next-idle">继续搬入 Tile 1</div>
+          </div>
+
+          <!-- 第 3 行：Vector 单元状态 -->
+          <div class="row-label">Vector 单元</div>
+          <div class="stage-track">
+            <div class="hw-bar idle">空闲等待（无数据可算）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar active-vec">忙碌（执行向量加法）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar idle">空闲等待（结果写回中）</div>
+            <span class="arrow-spacer"></span>
+            <div class="hw-bar next-idle">等待 Tile 1 数据</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- 两类硬件互等瓶颈双栏卡片 -->
+      <div class="wait-grid-2">
+        <article class="wait-card">
+          <div class="wait-head">
+            <span class="wait-num">1</span>
+            <h2 class="wait-title">Vector 单元等待搬运</h2>
+          </div>
+          <p class="wait-desc">
+            <span class="inline-code">MTE2</span> 从 <span class="inline-code">GM</span> 搬入 <span class="inline-code">Tile 0</span> 期间，片上尚无就绪数据，<span class="inline-code">Vector</span> 计算单元只能处于空闲等待状态。
+          </p>
+        </article>
+
+        <article class="wait-card mte-wait">
+          <div class="wait-head">
+            <span class="wait-num">2</span>
+            <h2 class="wait-title">MTE 引擎等待计算</h2>
+          </div>
+          <p class="wait-desc">
+            <span class="inline-code">Vector</span> 单元执行向量加法期间，<span class="inline-code">MTE</span> 搬运引擎被迫闲置，无法提前预读下一个 <span class="inline-code">Tile</span>。
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 第 2 页 (2 / 2)：1.5.4.2 根因：单缓冲区引发数据竞争 -->
+    <section id="slide-2" class="slide">
+      <div class="grid-2-col">
+        <!-- 左卡：根因分析（单缓冲区的数据竞争冲突） -->
+        <article class="cause-card">
+          <span class="pill-tag">瓶颈根因 · 单缓冲区限制</span>
+          <h2 class="card-main-title">单套 UB 缓冲区引发读写数据竞争</h2>
+          <p class="card-body-text">
+            当前仅开辟一套 <span class="inline-code amber">UB</span> 缓冲区：<span class="inline-code amber">xLocal</span>、<span class="inline-code amber">yLocal</span> 与 <span class="inline-code amber">zLocal</span>。若让 <span class="inline-code">MTE</span> 在 <span class="inline-code">Vector</span> 计算 <span class="inline-code">Tile 0</span> 的同时预读 <span class="inline-code">Tile 1</span>，新旧数据会写入同一块片上地址。
+          </p>
+
+          <!-- 数据竞争冲突可视化框 -->
+          <div class="diagram-box">
+            <div class="conflict-actors">
+              <div class="actor-chip vec-read">Vector 单元正在读取<br>Tile 0 数据</div>
+              <div class="actor-chip mte-write">MTE2 引擎同时写入<br>Tile 1 新数据</div>
+            </div>
+            <div class="shared-ub-target">
+              <div class="ub-buf-names">唯一片上缓冲：xLocal / yLocal / zLocal</div>
+              <div class="ub-conflict-alert">⚠ 同一片上物理地址冲突 → 导致数据覆盖与脏读</div>
+            </div>
+          </div>
+        </article>
+
+        <!-- 右卡：演进方向（双缓冲 Double Buffering） -->
+        <article class="sol-card">
+          <span class="pill-tag">架构演进 · 双缓冲机制</span>
+          <h2 class="card-main-title">引入双缓冲（Double Buffering）实现流水重叠</h2>
+          <p class="card-body-text">
+            为相邻 <span class="inline-code teal">Tile</span> 准备<strong>两套可轮换的 <span class="inline-code teal">UB</span> 工作区</strong>（Ping-Pong Buffer），在物理空间上彻底隔离正在计算与正在搬运的数据。
+          </p>
+
+          <!-- 串行 vs 双缓冲并行对比框 -->
+          <div class="diagram-box">
+            <div class="compare-row">
+              <span class="compare-label">当前单缓冲（串行互斥推进）</span>
+              <div class="mini-track">
+                <span class="mini-seg serial-mte">Tile i 搬入</span>
+                <span class="mini-seg serial-vec">Tile i 计算</span>
+                <span class="mini-seg serial-mte">Tile i+1 搬入</span>
+              </div>
+            </div>
+
+            <div class="compare-row">
+              <span class="compare-label good">双缓冲演进（空间隔离 · 时间重叠）</span>
+              <div class="pingpong-grid">
+                <div class="pp-lane buf0">Buffer 0 · Vector 单元<br>安全计算 <strong>Tile i</strong></div>
+                <div class="pp-lane buf1">Buffer 1 · MTE 引擎<br>并行预读 <strong>Tile i + 1</strong></div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <!-- 底部承上启下总结横幅 -->
+      <footer class="bottom-summary-strip">
+        核心思路：用<strong>两套轮换 UB 工作区</strong>消除片上地址竞争，让 <span class="inline-code teal">Tile i</span> 的 Vector 计算与 <span class="inline-code teal">Tile i + 1</span> 的 MTE 搬运在时间上安全重叠推进。
+      </footer>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const subtitles = [
+        "1.5.4.1 搬运与计算串行：Vector 单元与 MTE 引擎互等",
+        "1.5.4.2 根因：单缓冲区引发数据竞争"
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = subtitles.length;
+
+      const subtitleEl = document.getElementById("slideSubtitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2")
+      ];
+
+      function renderSlide() {
+        subtitleEl.textContent = subtitles[currentIndex];
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>

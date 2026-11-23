@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>1.2.2 - 1.2.3 昇腾算子切片、数据流与三阶段流水</title>
+    <style>
+        /* 全局样式重置与单屏居中画布 */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: #f1f5f9;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            color: #0f172a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+
+        /* 标准 16:9 宽屏 PPT 舞台 */
+        .ppt-stage {
+            width: min(95vw, 1280px, calc(93vh * 16 / 9));
+            aspect-ratio: 16 / 9;
+            max-height: 720px;
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+            border: 1px solid #cbd5e1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* 顶部固定 60px 导航标头（切换零位移） */
+        .ppt-header {
+            height: 60px;
+            flex-shrink: 0;
+            padding: 0 32px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #ffffff;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            min-width: 0;
+        }
+
+        .section-badge {
+            font-size: 16px;
+            font-weight: 700;
+            color: #334155;
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            padding: 4px 12px;
+            border-radius: 8px;
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .slide-title {
+            font-size: 24px;
+            font-weight: 800;
+            color: #0f172a;
+            margin-left: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 右上角翻页胶囊 */
+        .nav-pill {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            padding: 4px 8px;
+            border-radius: 10px;
+            flex-shrink: 0;
+        }
+
+        .nav-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            color: #1e293b;
+            font-size: 16px;
+            font-weight: 800;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+        }
+
+        .nav-btn:hover:not(:disabled) {
+            background: #f1f5f9;
+            border-color: #94a3b8;
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .page-indicator {
+            font-size: 15px;
+            font-weight: 700;
+            color: #475569;
+            min-width: 48px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* 主内容区域 */
+        .slide-content {
+            display: none;
+            flex: 1;
+            padding: 18px 30px 22px;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 16px;
+            min-height: 0;
+        }
+
+        .slide-content.active {
+            display: flex;
+        }
+
+        /* 第 3、4、5 页主容器严格顶部对齐 */
+        .slide-content.top-aligned {
+            justify-content: flex-start;
+        }
+
+        /* 内联代码标签 */
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+            font-weight: 700;
+            color: #0f172a;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 1px 7px;
+            border-radius: 6px;
+        }
+
+        /* ================= 通用顶部说明横幅 ================= */
+        .top-banner {
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 12px;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            flex-shrink: 0;
+            font-size: 21px;
+            font-weight: 700;
+            color: #1e293b;
+            line-height: 1.4;
+        }
+
+        .banner-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .dark-pill {
+            background: #0f172a;
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 700;
+            padding: 5px 12px;
+            border-radius: 7px;
+            flex-shrink: 0;
+        }
+
+        .limit-tag {
+            background: #eff6ff;
+            border: 1.5px solid #bfdbfe;
+            color: #1e40af;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-weight: 700;
+            font-size: 18px;
+            padding: 5px 14px;
+            border-radius: 7px;
+            flex-shrink: 0;
+        }
+
+        /* ================= 第 1 页：UB 容量预算 ================= */
+        .grid-2 {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 24px;
+            min-height: 0;
+        }
+
+        .compare-card {
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 24px 28px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            min-width: 0;
+            min-height: 0;
+        }
+
+        .pill-safe {
+            align-self: flex-start;
+            background: #eff6ff;
+            border: 1px solid #93c5fd;
+            color: #1e40af;
+            font-size: 16px;
+            font-weight: 700;
+            padding: 5px 14px;
+            border-radius: 7px;
+        }
+
+        .pill-danger {
+            align-self: flex-start;
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            color: #b91c1c;
+            font-size: 16px;
+            font-weight: 700;
+            padding: 5px 14px;
+            border-radius: 7px;
+        }
+
+        .card-heading {
+            font-size: 32px;
+            font-weight: 800;
+            color: #0f172a;
+            margin: 14px 0 18px;
+            line-height: 1.25;
+        }
+
+        .bullet-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .bullet-list li {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 23px;
+            font-weight: 700;
+            color: #1e293b;
+            line-height: 1.55;
+            white-space: nowrap;
+        }
+
+        .bullet-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .bullet-dot.blue {
+            background: #1d4ed8;
+        }
+
+        .bullet-dot.red {
+            background: #b91c1c;
+        }
+
+        .formula-box {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 16px 14px;
+            text-align: center;
+            font-family: "Cambria Math", "Times New Roman", Georgia, serif;
+            font-size: clamp(20px, 2.05vw, 24px);
+            font-weight: 700;
+            letter-spacing: 0.2px;
+            white-space: nowrap;
+        }
+
+        .formula-box.safe {
+            border: 1.5px solid #93c5fd;
+            color: #1e3a8a;
+        }
+
+        .formula-box.danger {
+            border: 1.5px solid #fca5a5;
+            color: #991b1b;
+        }
+
+        .meter-box {
+            margin-top: auto;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px 20px;
+        }
+
+        .meter-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+            font-size: 19.5px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .meter-track {
+            height: 15px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .meter-fill-safe {
+            width: 49.2%;
+            height: 100%;
+            background: #1d4ed8;
+            border-radius: 999px;
+        }
+
+        .meter-fill-danger {
+            width: 98.4%;
+            height: 100%;
+            background: #b91c1c;
+            border-radius: 999px;
+        }
+
+        /* ================= 第 2 页：U 型闭环数据流 ================= */
+        .u-flow-grid {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 1fr auto 1.05fr auto 1.05fr;
+            grid-template-rows: 1fr auto 1fr;
+            gap: 8px 12px;
+            align-items: stretch;
+        }
+
+        .flow-card {
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 20px 22px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .flow-card.host-card {
+            grid-column: 1;
+            grid-row: 1 / 4;
+            border-radius: 16px;
+            padding: 26px 24px;
+            gap: 18px;
+        }
+
+        .flow-card.ub-card {
+            border: 1.5px solid #93c5fd;
+        }
+
+        .mem-badge {
+            align-self: flex-start;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 19px;
+            font-weight: 700;
+            color: #1e40af;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 4px 12px;
+            border-radius: 8px;
+        }
+
+        .flow-card-text {
+            font-size: 26px;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 1.45;
+        }
+
+        .flow-card.host-card .flow-card-text {
+            font-size: 27px;
+        }
+
+        .h-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .action-pill {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+            font-size: 18px;
+            font-weight: 700;
+            padding: 6px 10px;
+            border-radius: 8px;
+            text-align: center;
+            line-height: 1.3;
+            max-width: 155px;
+        }
+
+        .arrow-icon {
+            font-size: 28px;
+            font-weight: 800;
+            color: #1e40af;
+            line-height: 1;
+        }
+
+        .v-step-right {
+            grid-column: 5;
+            grid-row: 2;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 2px 0;
+        }
+
+        .v-action-pill {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+            font-size: 19px;
+            font-weight: 700;
+            padding: 5px 14px;
+            border-radius: 8px;
+            text-align: center;
+            line-height: 1.25;
+        }
+
+        /* ================= 第 3、4、5 页：严格顶部对齐双栏（1.32fr : 1fr） ================= */
+        .code-split-grid {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 1.32fr 1fr;
+            gap: 20px;
+            align-items: stretch;
+        }
+
+        .code-panel {
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 18px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 12px;
+            min-width: 0;
+            min-height: 0;
+        }
+
+        .code-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .code-lang-tag {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 16px;
+            font-weight: 700;
+            color: #1e40af;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            padding: 4px 12px;
+            border-radius: 7px;
+        }
+
+        .code-file-hint {
+            font-size: 16px;
+            font-weight: 700;
+            color: #64748b;
+        }
+
+        .code-box {
+            flex: 1;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 12px;
+            padding: 18px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: flex-start;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        .cpp-pre {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: clamp(15.5px, 1.48vw, 18.5px);
+            font-weight: 600;
+            line-height: 1.72;
+            color: #0f172a;
+            white-space: pre;
+            width: 100%;
+        }
+
+        .cpp-pre.ubuf-code {
+            font-size: clamp(18px, 1.78vw, 22px);
+            line-height: 1.9;
+        }
+
+        .cpp-pre.pipeline-code {
+            font-size: clamp(14.5px, 1.38vw, 17px);
+            line-height: 1.52;
+        }
+
+        /* 高对比学术浅底代码语法高亮 */
+        .tok-kw {
+            color: #1d4ed8;
+            font-weight: 800;
+        }
+
+        .tok-attr {
+            color: #0f766e;
+            font-weight: 800;
+        }
+
+        .tok-type {
+            color: #0369a1;
+            font-weight: 700;
+        }
+
+        .tok-fn {
+            color: #6d28d9;
+            font-weight: 800;
+        }
+
+        .tok-const {
+            color: #b45309;
+            font-weight: 700;
+        }
+
+        .tok-cmt {
+            color: #64748b;
+            font-style: italic;
+            font-weight: 600;
+        }
+
+        /* 右侧结构化图解与简明卡片栈（严格顶部对齐 + 放大投影字号） */
+        .visual-stack {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 16px;
+            min-width: 0;
+            min-height: 0;
+        }
+
+        .visual-stack.three-stages {
+            gap: 14px;
+        }
+
+        .viz-card {
+            flex: 1;
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 14px;
+            padding: 18px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .viz-card.accent {
+            border-color: #93c5fd;
+        }
+
+        .v-card-badge {
+            align-self: flex-start;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+            font-size: 16.5px;
+            font-weight: 800;
+            padding: 4px 12px;
+            border-radius: 7px;
+        }
+
+        /* 第 3 页右侧：限定符双标签对照 */
+        .qual-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            flex: 1;
+        }
+
+        .qual-box {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 8px;
+        }
+
+        .qual-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 21px;
+            font-weight: 800;
+            color: #0f766e;
+        }
+
+        .qual-desc {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1e293b;
+            line-height: 1.4;
+        }
+
+        /* 第 3 页右侧：block_idx = 3 内存切片可视化条 */
+        .slice-summary {
+            font-size: 21px;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 1.4;
+        }
+
+        .slice-bar-wrap {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 10px;
+        }
+
+        .slice-track {
+            display: grid;
+            grid-template-columns: 2.7fr 2.6fr 2.5fr;
+            height: 44px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1.5px solid #94a3b8;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 17px;
+            font-weight: 800;
+        }
+
+        .slice-seg-prev {
+            background: #f1f5f9;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-right: 1px dashed #94a3b8;
+        }
+
+        .slice-seg-active {
+            background: #eff6ff;
+            color: #1e40af;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-right: 1px dashed #94a3b8;
+        }
+
+        .slice-seg-next {
+            background: #f8fafc;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .slice-axis {
+            display: flex;
+            justify-content: space-between;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 16px;
+            font-weight: 700;
+            color: #475569;
+        }
+
+        /* 第 4 页右侧：路径图解与静态vs动态对比 */
+        .path-wrap {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 12px;
+        }
+
+        .path-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 14px 12px;
+        }
+
+        .path-node {
+            text-align: center;
+            padding: 9px 10px;
+            border-radius: 8px;
+            font-size: 19px;
+            font-weight: 800;
+            line-height: 1.3;
+            flex: 1;
+        }
+
+        .path-node.gm {
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            color: #334155;
+        }
+
+        .path-node.ub {
+            background: #eff6ff;
+            border: 1.5px solid #93c5fd;
+            color: #1e40af;
+        }
+
+        .path-node.vec {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            color: #0f172a;
+        }
+
+        .path-edge {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-size: 15px;
+            font-weight: 800;
+            color: #1e40af;
+            white-space: nowrap;
+        }
+
+        .path-ban {
+            text-align: center;
+            font-size: 18px;
+            font-weight: 700;
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            border-radius: 8px;
+            padding: 8px 12px;
+        }
+
+        .vs-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            flex: 1;
+        }
+
+        .vs-box {
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 14px 14px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 8px;
+        }
+
+        .vs-box.yes {
+            border-color: #93c5fd;
+        }
+
+        .vs-title-yes {
+            font-size: 19.5px;
+            font-weight: 800;
+            color: #1e40af;
+        }
+
+        .vs-title-no {
+            font-size: 19.5px;
+            font-weight: 800;
+            color: #64748b;
+            text-decoration: line-through;
+        }
+
+        .vs-detail {
+            font-size: 19px;
+            font-weight: 700;
+            color: #1e293b;
+            line-height: 1.42;
+        }
+
+        /* 第 5 页右侧：三阶段流水卡片（严格顶部对齐 + 放大字号） */
+        .stage-card {
+            flex: 1;
+            background: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 13px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .stage-card.compute {
+            border-color: #93c5fd;
+        }
+
+        .stage-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .stage-name {
+            font-size: 21px;
+            font-weight: 800;
+            color: #0f172a;
+        }
+
+        .unit-pill {
+            font-size: 16px;
+            font-weight: 800;
+            padding: 4px 12px;
+            border-radius: 7px;
+            white-space: nowrap;
+        }
+
+        .unit-pill.bytes {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e40af;
+        }
+
+        .unit-pill.elems {
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            color: #b91c1c;
+        }
+
+        .stage-formula {
+            font-size: 19.5px;
+            font-weight: 700;
+            color: #334155;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .sync-tag {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 16px;
+            font-weight: 800;
+            color: #0f766e;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 4px 10px;
+            border-radius: 7px;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ppt-stage">
+        <!-- 顶部固定 60px 标头 -->
+        <header class="ppt-header">
+            <div class="header-left">
+                <span id="sectionBadge" class="section-badge">1.2.2.1</span>
+                <h1 id="slideTitle" class="slide-title">手算切片参数与 UB 容量预算</h1>
+            </div>
+            <div class="nav-pill">
+                <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">&lt;</button>
+                <span id="pageIndicator" class="page-indicator">1 / 5</span>
+                <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">&gt;</button>
+            </div>
+        </header>
+
+        <!-- 第 1 页：1.2.2.1 手算切片参数与 UB 容量预算 -->
+        <section id="slide-1" class="slide-content active">
+            <div class="top-banner">
+                <div class="banner-left">
+                    <span class="dark-pill">硬件物理基准</span>
+                    <span>昇腾 910B 单核 AI Core 的 UB 片上物理标称容量约为 256 KB</span>
+                </div>
+                <span class="limit-tag">上限: 256 KB / Core</span>
+            </div>
+
+            <div class="grid-2">
+                <!-- 左栏：16 Block 推荐方案 -->
+                <div class="compare-card">
+                    <span class="pill-safe">16 Block 推荐方案</span>
+                    <h2 class="card-heading">片上缓存安全充足</h2>
+                    <ul class="bullet-list">
+                        <li>
+                            <span class="bullet-dot blue"></span>
+                            <span>每个 Block 负责 10752 个 <code>float32</code> 元素</span>
+                        </li>
+                        <li>
+                            <span class="bullet-dot blue"></span>
+                            <span>片上 UB 为 <code>x</code>、<code>y</code>、<code>z</code> 申请三段局部缓冲区</span>
+                        </li>
+                    </ul>
+
+                    <div class="formula-box safe">
+                        3 × 10752 × 4 B = 129024 B = 126 KB
+                    </div>
+
+                    <div class="meter-box">
+                        <div class="meter-top">
+                            <span style="color: #1e293b;">静态缓冲区占用 126 KB / 256 KB</span>
+                            <span style="color: #1d4ed8;">49.2%（安全）</span>
+                        </div>
+                        <div class="meter-track">
+                            <div class="meter-fill-safe"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右栏：8 Block 直觉反思 -->
+                <div class="compare-card">
+                    <span class="pill-danger">8 Block 直觉反思</span>
+                    <h2 class="card-heading">若仅切分为 8 个 Block</h2>
+                    <ul class="bullet-list">
+                        <li>
+                            <span class="bullet-dot red"></span>
+                            <span>每核处理数据量翻倍至 21504 个元素</span>
+                        </li>
+                        <li>
+                            <span class="bullet-dot red"></span>
+                            <span>三段局部缓冲区静态内存占用随之翻倍</span>
+                        </li>
+                    </ul>
+
+                    <div class="formula-box danger">
+                        3 × 21504 × 4 B = 258048 B ≈ 252 KB
+                    </div>
+
+                    <div class="meter-box">
+                        <div class="meter-top">
+                            <span style="color: #1e293b;">静态缓冲区占用 252 KB / 256 KB</span>
+                            <span style="color: #b91c1c;">98.4%（高危）</span>
+                        </div>
+                        <div class="meter-track">
+                            <div class="meter-fill-danger"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 第 2 页：1.2.2.2 确定单核内部的“搬运-计算-写回”数据流 -->
+        <section id="slide-2" class="slide-content">
+            <div class="top-banner">
+                <span>确定 <code>Block</code> 分配后，数据在单个 Core 内部按以下轨迹流动：</span>
+            </div>
+
+            <div class="u-flow-grid">
+                <!-- 第 1 列（全高）：Host Memory -->
+                <div class="flow-card host-card">
+                    <span class="mem-badge">Host Memory</span>
+                    <div class="flow-card-text">
+                        准备输入 <code>x</code>、<code>y</code>，并在结束后读取 <code>z</code>
+                    </div>
+                </div>
+
+                <!-- 第 2 列上排：Host -> Global Memory -->
+                <div class="h-step" style="grid-column: 2; grid-row: 1;">
+                    <span class="action-pill">Host 与设备之间复制</span>
+                    <span class="arrow-icon">→</span>
+                </div>
+
+                <!-- 第 2 列下排：Global Memory -> Host -->
+                <div class="h-step" style="grid-column: 2; grid-row: 3;">
+                    <span class="action-pill">Host 与设备之间复制</span>
+                    <span class="arrow-icon">←</span>
+                </div>
+
+                <!-- 第 3 列上排：Global Memory（完整输入输出） -->
+                <div class="flow-card" style="grid-column: 3; grid-row: 1;">
+                    <span class="mem-badge">Global Memory</span>
+                    <div class="flow-card-text">
+                        保存完整 <code>x</code>、<code>y</code>、<code>z</code>
+                    </div>
+                </div>
+
+                <!-- 第 3 列下排：Global Memory（得到完整 z） -->
+                <div class="flow-card" style="grid-column: 3; grid-row: 3;">
+                    <span class="mem-badge">Global Memory</span>
+                    <div class="flow-card-text">
+                        得到完整 <code>z</code>
+                    </div>
+                </div>
+
+                <!-- 第 4 列上排：Global Memory -> UB（搬入） -->
+                <div class="h-step" style="grid-column: 4; grid-row: 1;">
+                    <span class="action-pill">当前 Block 的 x、y 片段搬入</span>
+                    <span class="arrow-icon">→</span>
+                </div>
+
+                <!-- 第 4 列下排：UB -> Global Memory（写回） -->
+                <div class="h-step" style="grid-column: 4; grid-row: 3;">
+                    <span class="action-pill">当前 Block 的 z 片段写回</span>
+                    <span class="arrow-icon">←</span>
+                </div>
+
+                <!-- 第 5 列上排：UB (x, y) -->
+                <div class="flow-card ub-card" style="grid-column: 5; grid-row: 1;">
+                    <span class="mem-badge">UB</span>
+                    <div class="flow-card-text">
+                        暂存当前 <code>Block</code> 的 <code>x</code>、<code>y</code>
+                    </div>
+                </div>
+
+                <!-- 第 5 列中排：向量加法 -->
+                <div class="v-step-right">
+                    <span class="arrow-icon">↓</span>
+                    <span class="v-action-pill">向量加法</span>
+                </div>
+
+                <!-- 第 5 列下排：UB (z) -->
+                <div class="flow-card ub-card" style="grid-column: 5; grid-row: 3;">
+                    <span class="mem-badge">UB</span>
+                    <div class="flow-card-text">
+                        暂存当前 <code>Block</code> 的 <code>z</code>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 第 3 页：1.2.3.1 定位当前 Block 的数据首地址 -->
+        <section id="slide-3" class="slide-content top-aligned">
+            <div class="top-banner">
+                <span>所有 <code>Block</code> 执行的都是同一份 <code>Kernel</code> 代码。硬件通过内置系统变量 <code>block_idx</code>（取值 <code>0</code> 到 <code>15</code>）区分不同的逻辑 <code>Block</code>：</span>
+            </div>
+
+            <div class="code-split-grid">
+                <!-- 左侧 C++ 代码卡 -->
+                <div class="code-panel">
+                    <div class="code-card-header">
+                        <span class="code-lang-tag">C++ · GM 首地址偏移</span>
+                        <span class="code-file-hint">单份 Kernel 多核并行</span>
+                    </div>
+                    <div class="code-box">
+<pre class="cpp-pre"><span class="tok-kw">constexpr</span> <span class="tok-type">uint32_t</span> block_length = <span class="tok-const">TOTAL_LENGTH</span> / <span class="tok-const">NUM_BLOCKS</span>;
+
+<span class="tok-attr">__gm__</span> <span class="tok-type">float</span>* x_gm = x + block_idx * block_length;
+<span class="tok-attr">__gm__</span> <span class="tok-type">float</span>* y_gm = y + block_idx * block_length;
+<span class="tok-attr">__gm__</span> <span class="tok-type">float</span>* z_gm = z + block_idx * block_length;</pre>
+                    </div>
+                </div>
+
+                <!-- 右侧图解与极简对比卡片 -->
+                <div class="visual-stack">
+                    <div class="viz-card">
+                        <span class="v-card-badge">函数限定符语义</span>
+                        <div class="qual-grid">
+                            <div class="qual-box">
+                                <span class="qual-code">__global__</span>
+                                <span class="qual-desc">可由 Host 启动的 Kernel</span>
+                            </div>
+                            <div class="qual-box">
+                                <span class="qual-code">__vector__</span>
+                                <span class="qual-desc">由 AI Core 内的 Vector 计算单元执行</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="viz-card accent">
+                        <span class="v-card-badge">切片偏移实例 · block_idx = 3</span>
+                        <div class="slice-summary">
+                            三个指针同时偏移 <code>3 × 10752 = 32256</code> 个元素
+                        </div>
+                        <div class="slice-bar-wrap">
+                            <div class="slice-track">
+                                <div class="slice-seg-prev">Block 0~2</div>
+                                <div class="slice-seg-active">[32256 : 43008]</div>
+                                <div class="slice-seg-next">Block 4~15</div>
+                            </div>
+                            <div class="slice-axis">
+                                <span>0</span>
+                                <span>x / y / z 读写切片区间</span>
+                                <span>172032</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 第 4 页：1.2.3.2 分配 UB 局部工作区 -->
+        <section id="slide-4" class="slide-content top-aligned">
+            <div class="top-banner">
+                <span>Vector 计算单元无法直接对 <code>GM</code> 显存进行数学运算，必须在 <code>UB</code> 片上空间分配三段工作区：</span>
+            </div>
+
+            <div class="code-split-grid">
+                <!-- 左侧 C++ 代码卡 -->
+                <div class="code-panel">
+                    <div class="code-card-header">
+                        <span class="code-lang-tag">C++ · 片上 UB 工作区</span>
+                        <span class="code-file-hint">三段局部缓冲区声明</span>
+                    </div>
+                    <div class="code-box">
+<pre class="cpp-pre ubuf-code"><span class="tok-attr">__ubuf__</span> <span class="tok-type">float</span> x_local[block_length];
+<span class="tok-attr">__ubuf__</span> <span class="tok-type">float</span> y_local[block_length];
+<span class="tok-attr">__ubuf__</span> <span class="tok-type">float</span> z_local[block_length];</pre>
+                    </div>
+                </div>
+
+                <!-- 右侧图解与极简对比卡片 -->
+                <div class="visual-stack">
+                    <div class="viz-card">
+                        <span class="v-card-badge">片上访存路径约束</span>
+                        <div class="path-wrap">
+                            <div class="path-diagram">
+                                <div class="path-node gm">GM 显存</div>
+                                <div class="path-edge">
+                                    <span>DMA 搬运</span>
+                                    <span>⇄</span>
+                                </div>
+                                <div class="path-node ub">UB 片上工作区</div>
+                                <div class="path-edge">
+                                    <span>直接运算</span>
+                                    <span>⇄</span>
+                                </div>
+                                <div class="path-node vec">Vector 单元</div>
+                            </div>
+                            <div class="path-ban">GM ✕ Vector：Vector 计算单元无法直接对 GM 显存进行数学运算</div>
+                        </div>
+                    </div>
+
+                    <div class="viz-card accent">
+                        <span class="v-card-badge">__ubuf__ 静态资源映射</span>
+                        <div class="vs-grid">
+                            <div class="vs-box yes">
+                                <span class="vs-title-yes">✓ 编译期静态规划</span>
+                                <span class="vs-detail">编译器为整核预留 3 × 42 KB = 126 KB 硬件 UB 片上空间</span>
+                            </div>
+                            <div class="vs-box">
+                                <span class="vs-title-no">✕ 运行时动态栈</span>
+                                <span class="vs-detail">非普通 C++ 局部数组在栈上动态申请</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 第 5 页：1.2.3.3 搬运-计算-写回三阶段流水 -->
+        <section id="slide-5" class="slide-content top-aligned">
+            <div class="top-banner">
+                <span>单核 <code>Kernel</code> 内部按“数据搬入 → 片上向量计算 → 结果写回”三阶段顺序执行，并通过同步原语保证数据就绪：</span>
+            </div>
+
+            <div class="code-split-grid">
+                <!-- 左侧三阶段 C++ 代码卡 -->
+                <div class="code-panel">
+                    <div class="code-card-header">
+                        <span class="code-lang-tag">C++ · 三阶段执行流水</span>
+                        <span class="code-file-hint">GM ↔ UB 搬运与同步</span>
+                    </div>
+                    <div class="code-box">
+<pre class="cpp-pre pipeline-code"><span class="tok-cmt">// 4. 阶段一：数据搬入，GM -&gt; UB。长度单位为 Bytes。</span>
+<span class="tok-fn">asc_copy_gm2ub</span>(x_local, x_gm, block_length * <span class="tok-kw">sizeof</span>(<span class="tok-type">float</span>));
+<span class="tok-fn">asc_copy_gm2ub</span>(y_local, y_gm, block_length * <span class="tok-kw">sizeof</span>(<span class="tok-type">float</span>));
+<span class="tok-fn">asc_sync</span>();
+
+<span class="tok-cmt">// 5. 阶段二：片上向量计算。长度单位为元素个数。</span>
+<span class="tok-fn">asc_add</span>(z_local, x_local, y_local, block_length);
+<span class="tok-fn">asc_sync</span>();
+
+<span class="tok-cmt">// 6. 阶段三：结果写回，UB -&gt; GM。长度单位为 Bytes。</span>
+<span class="tok-fn">asc_copy_ub2gm</span>(z_gm, z_local, block_length * <span class="tok-kw">sizeof</span>(<span class="tok-type">float</span>));
+<span class="tok-fn">asc_sync</span>();</pre>
+                    </div>
+                </div>
+
+                <!-- 右侧三阶段结构化对比卡片 -->
+                <div class="visual-stack three-stages">
+                    <div class="stage-card">
+                        <div class="stage-top">
+                            <span class="stage-name">阶段一 · 数据搬入 (GM → UB)</span>
+                            <span class="unit-pill bytes">单位: Bytes</span>
+                        </div>
+                        <div class="stage-formula">
+                            <span><code>block_length * sizeof(float)</code></span>
+                            <span class="sync-tag">asc_sync()</span>
+                        </div>
+                    </div>
+
+                    <div class="stage-card compute">
+                        <div class="stage-top">
+                            <span class="stage-name">阶段二 · 向量计算 (UB 片上)</span>
+                            <span class="unit-pill elems">单位: 元素个数</span>
+                        </div>
+                        <div class="stage-formula">
+                            <span><code>block_length</code></span>
+                            <span class="sync-tag">asc_sync()</span>
+                        </div>
+                    </div>
+
+                    <div class="stage-card">
+                        <div class="stage-top">
+                            <span class="stage-name">阶段三 · 结果写回 (UB → GM)</span>
+                            <span class="unit-pill bytes">单位: Bytes</span>
+                        </div>
+                        <div class="stage-formula">
+                            <span><code>block_length * sizeof(float)</code></span>
+                            <span class="sync-tag">asc_sync()</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        (function () {
+            const slidesData = [
+                { badge: "1.2.2.1", title: "手算切片参数与 UB 容量预算" },
+                { badge: "1.2.2.2", title: "确定单核内部的“搬运-计算-写回”数据流" },
+                { badge: "1.2.3.1", title: "定位当前 Block 的数据首地址" },
+                { badge: "1.2.3.2", title: "分配 UB 局部工作区" },
+                { badge: "1.2.3.3", title: "搬运-计算-写回三阶段流水" }
+            ];
+
+            let currentIndex = 0;
+            window.setLecturePage = index => { currentIndex = index; renderSlide(); };
+            const totalSlides = slidesData.length;
+
+            const badgeEl = document.getElementById("sectionBadge");
+            const titleEl = document.getElementById("slideTitle");
+            const indicatorEl = document.getElementById("pageIndicator");
+            const prevBtn = document.getElementById("prevBtn");
+            const nextBtn = document.getElementById("nextBtn");
+            const slideEls = [
+                document.getElementById("slide-1"),
+                document.getElementById("slide-2"),
+                document.getElementById("slide-3"),
+                document.getElementById("slide-4"),
+                document.getElementById("slide-5")
+            ];
+
+            function renderSlide() {
+                badgeEl.textContent = slidesData[currentIndex].badge;
+                titleEl.textContent = slidesData[currentIndex].title;
+                indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+
+                prevBtn.disabled = currentIndex === 0;
+                nextBtn.disabled = currentIndex === totalSlides - 1;
+
+                slideEls.forEach((el, idx) => {
+                    if (idx === currentIndex) {
+                        el.classList.add("active");
+                    } else {
+                        el.classList.remove("active");
+                    }
+                });
+            }
+
+            function goPrev() {
+                if (currentIndex > 0) {
+                    currentIndex--;
+                    renderSlide();
+                }
+            }
+
+            function goNext() {
+                if (currentIndex < totalSlides - 1) {
+                    currentIndex++;
+                    renderSlide();
+                }
+            }
+
+            prevBtn.addEventListener("click", goPrev);
+            nextBtn.addEventListener("click", goNext);
+
+            window.addEventListener("keydown", function (e) {
+                if (e.key === "ArrowLeft" || e.key === "PageUp") {
+                    e.preventDefault();
+                    goPrev();
+                } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+                    e.preventDefault();
+                    goNext();
+                }
+            });
+
+            renderSlide();
+        })();
+    </script>
+</body>
+</html>

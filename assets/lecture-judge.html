@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.3 - 1.3.2.1 CANNJudge 评测平台与算子切片预算</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #f1f5f9;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .ppt-stage {
+      width: min(95vw, 1280px, calc(93vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      border-radius: 16px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      background: #ffffff;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 顶部固定 60px 导航标头（零抖动） */
+    .ppt-header {
+      height: 60px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 16px;
+      font-weight: 800;
+      color: #1e40af;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 12px;
+      border-radius: 7px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: 23px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角交互翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #1e293b;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15px;
+      font-weight: 700;
+      color: #475569;
+      min-width: 48px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片默认隐藏，仅激活页显示 */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      padding: 20px 28px 24px;
+      gap: 16px;
+      overflow: hidden;
+      justify-content: flex-start;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      font-weight: 700;
+      color: #0f172a;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 1px 7px;
+      border-radius: 6px;
+    }
+
+    /* 通用顶部/底部提示横幅 */
+    .banner-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px 20px;
+      font-size: 19.5px;
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+      flex-shrink: 0;
+    }
+
+    .banner-row {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      flex-shrink: 0;
+    }
+
+    .banner-row.target-blue {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+    }
+
+    .url-badge {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 20px;
+      font-weight: 800;
+      color: #1d4ed8;
+      background: #ffffff;
+      border: 1px solid #93c5fd;
+      padding: 5px 16px;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+
+    /* ================= 第 1 页：1.3 CANNJudge 平台简介 ================= */
+    .grid-2-start {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .compact-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 22px 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .compact-card.accent-blue {
+      border-color: #93c5fd;
+      background: #f8fafc;
+    }
+
+    .card-tag {
+      align-self: flex-start;
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #475569;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 4px 12px;
+      border-radius: 7px;
+    }
+
+    .compact-card.accent-blue .card-tag,
+    .card-tag.blue {
+      color: #1e40af;
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+
+    .card-tag.red {
+      color: #b91c1c;
+      background: #fef2f2;
+      border-color: #fca5a5;
+    }
+
+    .card-title-lg {
+      font-size: 25px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.25;
+    }
+
+    .bullet-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .bullet-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 20px;
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.45;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+      margin-top: 10px;
+      flex-shrink: 0;
+    }
+
+    .dot.blue {
+      background: #1d4ed8;
+    }
+
+    .dot.red {
+      background: #b91c1c;
+    }
+
+    /* ================= 第 2 页：1.3 教学配套题单进入途径 ================= */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .step-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 20px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 10px;
+    }
+
+    .step-card.final {
+      background: #eff6ff;
+      border-color: #93c5fd;
+    }
+
+    .step-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #1e40af;
+    }
+
+    .step-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .step-desc {
+      font-size: 18.5px;
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.45;
+    }
+
+    /* ================= 第 3 页：1.3.1 题目模板分工与评测执行链路 ================= */
+    .split-1-115 {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .col-stack-14 {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .col-stack-12 {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 12px;
+    }
+
+    .mini-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 13px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .mini-card.accent-blue {
+      border-color: #93c5fd;
+    }
+
+    .mini-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .mini-desc {
+      font-size: 18.5px;
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.45;
+    }
+
+    .diagram-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .flow-node {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 11px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 18px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+
+    .flow-node.dev-highlight {
+      background: #eff6ff;
+      border-color: #93c5fd;
+      color: #1e3a8a;
+    }
+
+    .flow-role {
+      font-size: 15px;
+      font-weight: 800;
+      color: #475569;
+      background: #f1f5f9;
+      padding: 3px 10px;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
+    .flow-node.dev-highlight .flow-role {
+      color: #1d4ed8;
+      background: #ffffff;
+      border: 1px solid #bfdbfe;
+    }
+
+    .flow-arrow {
+      text-align: center;
+      font-size: 17px;
+      font-weight: 800;
+      color: #1d4ed8;
+      line-height: 1;
+    }
+
+    /* ================= 第 4 & 5 页：语法高亮代码块与紧凑右侧栈 ================= */
+    .split-128-1 {
+      display: grid;
+      grid-template-columns: 1.28fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .split-112-1 {
+      display: grid;
+      grid-template-columns: 1.12fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .code-wrapper {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 12px;
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .code-surface {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 14px 16px;
+      overflow: hidden;
+    }
+
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(14px, 1.25vw, 15.8px);
+      font-weight: 600;
+      line-height: 1.56;
+      color: #0f172a;
+      white-space: pre;
+    }
+
+    /* 学术浅色语法高亮 */
+    .kw { color: #1d4ed8; font-weight: 800; }
+    .type { color: #0369a1; font-weight: 700; }
+    .fn { color: #6d28d9; font-weight: 800; }
+    .num { color: #0369a1; font-weight: 800; }
+    .str { color: #b45309; font-weight: 700; }
+    .inc { color: #b91c1c; font-weight: 700; }
+    .todo { color: #0f766e; font-weight: 800; }
+
+    .summary-pills-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .metric-pill {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 9px;
+      padding: 10px 8px;
+      text-align: center;
+      font-size: 16.5px;
+      font-weight: 800;
+      color: #1e293b;
+    }
+
+    .metric-pill.blue {
+      background: #eff6ff;
+      border-color: #93c5fd;
+      color: #1e40af;
+    }
+
+    /* ================= 第 6 页：1.3.2.1 16 Block vs 8 Block 对比 ================= */
+    .compare-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 20px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .compare-card.safe {
+      border-color: #93c5fd;
+    }
+
+    .compare-card.danger {
+      border-color: #fca5a5;
+    }
+
+    .formula-box {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 13px 12px;
+      text-align: center;
+      font-family: "Cambria Math", "Times New Roman", Georgia, serif;
+      font-size: clamp(19px, 1.85vw, 22px);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .formula-box.safe {
+      border: 1.5px solid #93c5fd;
+      color: #1e3a8a;
+    }
+
+    .formula-box.danger {
+      border: 1.5px solid #fca5a5;
+      color: #991b1b;
+    }
+
+    .meter-box {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .meter-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .meter-track {
+      height: 12px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .meter-fill-safe {
+      width: 49.2%;
+      height: 100%;
+      background: #1d4ed8;
+      border-radius: 999px;
+    }
+
+    .meter-fill-danger {
+      width: 98.4%;
+      height: 100%;
+      background: #b91c1c;
+      border-radius: 999px;
+    }
+
+    .callout-bar {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 14px 20px;
+      font-size: 18.5px;
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="ppt-stage">
+    <!-- 顶部固定 60px 标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span id="sectionBadge" class="section-pill">1.3</span>
+        <h1 id="slideTitle" class="slide-title">CANNJudge 平台简介</h1>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">&lt;</button>
+        <span id="pageIndicator" class="page-indicator">1 / 6</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">&gt;</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页：1.3 CANNJudge 平台简介 -->
+    <section id="slide-1" class="slide active">
+      <div class="banner-card">
+        本节对应 TensorOJ 题目，与传统算法在线评测平台类似：平台给出题目、测试数据和评测框架，提交后自动判断结果是否正确；不同之处在于，评测对象不再是普通 CPU 算法程序，而是面向昇腾 NPU 的算子实现。
+      </div>
+
+      <div class="grid-2-start">
+        <div class="compact-card">
+          <span class="card-tag">共性机制</span>
+          <h2 class="card-title-lg">传统算法在线评测</h2>
+          <ul class="bullet-list">
+            <li><span class="dot"></span><span>提供标准题目描述、测试用例与统一评测框架</span></li>
+            <li><span class="dot"></span><span>代码提交后自动编译运行并判断结果正确性</span></li>
+          </ul>
+        </div>
+
+        <div class="compact-card accent-blue">
+          <span class="card-tag blue">核心差异</span>
+          <h2 class="card-title-lg">CANNJudge 昇腾算子评测</h2>
+          <ul class="bullet-list">
+            <li><span class="dot blue"></span><span>评测对象不再是普通 CPU 算法逻辑程序</span></li>
+            <li><span class="dot blue"></span><span>直接面向昇腾 NPU 硬件验证算子核函数实现</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 2 页：1.3 教学配套题单进入途径 -->
+    <section id="slide-2" class="slide">
+      <div class="banner-row">
+        <span>CANNJudge 评测平台网址</span>
+        <span class="url-badge">cannjudge.cn</span>
+      </div>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <span class="step-num">STEP 01</span>
+          <h2 class="step-title">访问官网</h2>
+          <p class="step-desc">浏览器打开 cannjudge.cn</p>
+        </div>
+
+        <div class="step-card">
+          <span class="step-num">STEP 02</span>
+          <h2 class="step-title">进入小组空间</h2>
+          <p class="step-desc">点击导航栏「小组空间」</p>
+        </div>
+
+        <div class="step-card">
+          <span class="step-num">STEP 03</span>
+          <h2 class="step-title">选择 CCPC 小组</h2>
+          <p class="step-desc">进入「CCPC大学生程序设计竞赛」小组</p>
+        </div>
+
+        <div class="step-card final">
+          <span class="step-num">STEP 04</span>
+          <h2 class="step-title">打开配套题单</h2>
+          <p class="step-desc">进入「教程配套题单」开始练习</p>
+        </div>
+      </div>
+
+      <div class="banner-row target-blue">
+        <span>本章对应题目为 Add Simple</span>
+        <span class="url-badge">cannjudge.cn/ccpc/teaching/add_easy</span>
+      </div>
+    </section>
+
+    <!-- 第 3 页：1.3.1 题目模板分工与评测执行链路 -->
+    <section id="slide-3" class="slide">
+      <div class="banner-card">
+        打开题目工程时，开发者面对的是一份尚未完成的 <code>kernel.asc</code>：评测框架承担数据准备与结果校验，开发者只需补齐 <code>add_custom</code> 与 <code>run_kernel</code> 两处逻辑。
+      </div>
+
+      <div class="split-1-115">
+        <div class="col-stack-14">
+          <div class="mini-card">
+            <span class="card-tag">评测框架 · 固定托管</span>
+            <h2 class="mini-title">自动完成数据准备与结果校验</h2>
+            <p class="mini-desc">负责申请 <code>x</code>、<code>y</code>、<code>z</code> 设备显存，等待算子执行完成并拉回结果比对。</p>
+          </div>
+
+          <div class="mini-card accent-blue">
+            <span class="card-tag blue">开发者 · 需补齐两处</span>
+            <h2 class="mini-title">实现算子计算与 Host 启动入口</h2>
+            <p class="mini-desc">定义 NPU 侧执行的 <code>add_custom</code> Kernel，并在 <code>run_kernel</code> 中按给定接口配置启动。</p>
+          </div>
+        </div>
+
+        <div class="diagram-card">
+          <span class="card-tag blue">评测完整执行链路</span>
+
+          <div class="flow-node">
+            <span>准备 <code>x</code>、<code>y</code>、<code>z</code> 的设备内存</span>
+            <span class="flow-role">评测框架</span>
+          </div>
+          <div class="flow-arrow">↓</div>
+
+          <div class="flow-node dev-highlight">
+            <span><code>run_kernel( ... )</code> 配置并启动 Kernel</span>
+            <span class="flow-role">开发者补齐</span>
+          </div>
+          <div class="flow-arrow">↓</div>
+
+          <div class="flow-node dev-highlight">
+            <span><code>add_custom( ... )</code> Device 端 Add 计算</span>
+            <span class="flow-role">开发者定义</span>
+          </div>
+          <div class="flow-arrow">↓</div>
+
+          <div class="flow-node">
+            <span>等待、取回并校验 <code>z</code></span>
+            <span class="flow-role">评测框架</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 4 页：1.3.1 kernel.asc 模板代码与两处 TODO -->
+    <section id="slide-4" class="slide">
+      <div class="split-128-1">
+        <div class="code-wrapper">
+          <div class="code-header">
+            <span class="card-tag blue">C++ · kernel.asc 初始模板</span>
+          </div>
+          <div class="code-surface">
+<pre><span class="inc">#include &lt;cmath&gt;</span>
+<span class="inc">#include "kernel_operator.h"</span>
+
+<span class="todo">// TODO 1: 定义 add_custom，完成 Device 端的向量加法。</span>
+
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="type">void</span> <span class="fn">run_kernel</span>(
+    <span class="type">GM_ADDR</span> x, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_x,
+    <span class="type">GM_ADDR</span> y, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_y,
+    <span class="type">GM_ADDR</span> z, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_z,
+    <span class="type">int64_t</span> availableCoreNum, <span class="type">aclrtStream</span> stream)
+{
+    <span class="todo">// TODO 2: 使用 &lt;&lt;&lt; ... &gt;&gt;&gt; 启动 add_custom。</span>
+}</pre>
+          </div>
+        </div>
+
+        <div class="col-stack-12">
+          <div class="mini-card">
+            <span class="card-tag">接口约束</span>
+            <h2 class="mini-title">严禁修改 <code>run_kernel</code> 函数签名</h2>
+            <p class="mini-desc">模板已固定参数列表与 <code>extern "C"</code> 导出约定，直接沿用即可。</p>
+          </div>
+
+          <div class="mini-card accent-blue">
+            <span class="card-tag blue">开发顺序 ①</span>
+            <h2 class="mini-title">先完成 TODO 1（Device 端）</h2>
+            <p class="mini-desc">编写 <code>add_custom</code> 核函数，实现单 Block 切片的片上向量加法。</p>
+          </div>
+
+          <div class="mini-card accent-blue">
+            <span class="card-tag blue">开发顺序 ②</span>
+            <h2 class="mini-title">再补齐 TODO 2（Host 启动）</h2>
+            <p class="mini-desc">回到 <code>run_kernel</code>，利用传入的指针与 <code>stream</code> 参数配置并启动核函数。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 5 页：1.3.2.1 手算切片参数与三项硬件限制 -->
+    <section id="slide-5" class="slide">
+      <div class="banner-card">
+        编写 <code>add_custom</code> 前先算清两件事：完整向量如何在多 <code>Block</code> 间分工，以及单个 <code>Block</code> 的三段局部数据能否安全放入单个 AI Core 的 <code>UB</code>。
+      </div>
+
+      <div class="split-112-1">
+        <div class="code-wrapper">
+          <div class="code-header">
+            <span class="card-tag blue">C++ · 固定规格静态执行参数</span>
+          </div>
+          <div class="code-surface">
+<pre><span class="kw">constexpr</span> <span class="type">uint32_t</span> NUM_BLOCKS = <span class="num">16</span>;
+<span class="kw">constexpr</span> <span class="type">uint32_t</span> BLOCK_LENGTH = <span class="num">10752</span>;
+<span class="kw">constexpr</span> <span class="type">int64_t</span> TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;</pre>
+          </div>
+          <div class="summary-pills-row">
+            <div class="metric-pill blue">总长度 172032</div>
+            <div class="metric-pill">并行核数 16 Block</div>
+            <div class="metric-pill">单核切片 10752 元素</div>
+          </div>
+        </div>
+
+        <div class="col-stack-12">
+          <div class="mini-card">
+            <span class="card-tag">限制 ① · 多核负载均衡</span>
+            <p class="mini-desc"><code>172032</code> 个元素由 <code>16</code> 个逻辑 <code>Block</code> 均分，每个 <code>Block</code> 精确处理 <code>10752</code> 个元素。</p>
+          </div>
+
+          <div class="mini-card">
+            <span class="card-tag">限制 ② · 32 字节对齐</span>
+            <p class="mini-desc">单段 <code>float32</code> 长度为 <code>10752 × 4 B = 43008 B = 1344 × 32 B</code>，严格满足 32 B 整数倍对齐。</p>
+          </div>
+
+          <div class="mini-card accent-blue">
+            <span class="card-tag blue">限制 ③ · UB 容量预算</span>
+            <p class="mini-desc"><code>xLocal</code>、<code>yLocal</code>、<code>zLocal</code> 三段缓冲共占 <code>3 × 10752 × 4 B = 129024 B = 126 KB</code>，约为 256 KB 标称容量一半，安全余量充足。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 6 页：1.3.2.1 为何启动 16 Block 而非 8 Block？ -->
+    <section id="slide-6" class="slide">
+      <div class="grid-2-start">
+        <div class="compare-card safe">
+          <span class="card-tag blue">16 Block · 推荐安全方案</span>
+          <h2 class="card-title-lg">单核片上缓冲安全充足</h2>
+          <ul class="bullet-list">
+            <li><span class="dot blue"></span><span>每核处理 <code>10752</code> 个 <code>float32</code> 元素</span></li>
+          </ul>
+          <div class="formula-box safe">
+            3 × 10752 × 4 B = 129024 B = 126 KB
+          </div>
+          <div class="meter-box">
+            <div class="meter-top">
+              <span style="color: #1e293b;">126 KB / 256 KB</span>
+              <span style="color: #1d4ed8;">49.2%（安全）</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill-safe"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="compare-card danger">
+          <span class="card-tag red">8 Block · 翻倍高危反例</span>
+          <h2 class="card-title-lg">每核负载翻倍至 21504 元素</h2>
+          <ul class="bullet-list">
+            <li><span class="dot red"></span><span>三段 UB 局部数组静态占用随之翻倍</span></li>
+          </ul>
+          <div class="formula-box danger">
+            3 × 21504 × 4 B = 258048 B ≈ 252 KB
+          </div>
+          <div class="meter-box">
+            <div class="meter-top">
+              <span style="color: #1e293b;">252 KB / 256 KB</span>
+              <span style="color: #b91c1c;">98.4%（高危）</span>
+            </div>
+            <div class="meter-track">
+              <div class="meter-fill-danger"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout-bar">
+        单个 AI Core 标称 <code>256 KB</code> UB 中，编译器控制信息与运行时框架均需占用片上资源；分配 <code>252 KB</code>（<code>98.4%</code>）极易在编译期检查或运行时直接失败，因此切分为 <code>16</code> 个 <code>Block</code>（<code>126 KB</code>）才安全可靠。
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const slidesData = [
+        { badge: "1.3", title: "CANNJudge 平台简介" },
+        { badge: "1.3", title: "教学配套题单进入途径" },
+        { badge: "1.3.1", title: "题目模板分工与评测执行链路" },
+        { badge: "1.3.1", title: "kernel.asc 模板代码与两处 TODO" },
+        { badge: "1.3.2.1", title: "手算切片参数与三项硬件限制" },
+        { badge: "1.3.2.1", title: "为何启动 16 Block 而非 8 Block？" }
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = slidesData.length;
+
+      const badgeEl = document.getElementById("sectionBadge");
+      const titleEl = document.getElementById("slideTitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2"),
+        document.getElementById("slide-3"),
+        document.getElementById("slide-4"),
+        document.getElementById("slide-5"),
+        document.getElementById("slide-6")
+      ];
+
+      function renderSlide() {
+        badgeEl.textContent = slidesData[currentIndex].badge;
+        titleEl.textContent = slidesData[currentIndex].title;
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>

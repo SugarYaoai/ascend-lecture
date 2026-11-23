@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.3.2.2 - 1.3.3.2 算子指针转换、完整数据流与 Launch 入口课件</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .ppt-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      padding: 20px 26px 22px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+    }
+
+    /* 顶部固定 60px 导航标头（切换零抖动） */
+    .ppt-header {
+      height: 60px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 16.5px;
+      font-weight: 800;
+      color: #0284c7;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      padding: 4px 12px;
+      border-radius: 7px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: 23px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角交互翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15.5px;
+      font-weight: 700;
+      color: #475569;
+      min-width: 50px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片默认隐藏，仅激活页显示，严格顶部对齐 */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      gap: 14px;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 内联代码标签 */
+    .inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      font-weight: 700;
+      color: #0f172a;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 1px 6px;
+      border-radius: 6px;
+    }
+
+    /* 顶部导语条 */
+    .banner-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: 19.5px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.45;
+      flex-shrink: 0;
+    }
+
+    /* ================= 通用严格顶部对齐网格 ================= */
+    .split-132-1 {
+      display: grid;
+      grid-template-columns: 1.32fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .split-128-1 {
+      display: grid;
+      grid-template-columns: 1.28fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .split-1-1 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .col-stack {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .col-stack-sm {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    /* 高对比浅冷灰代码卡片（单行零溢出） */
+    .code-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 13px 15px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .code-card.spotlight {
+      border-color: #7dd3fc;
+      background: #f8fafc;
+    }
+
+    .code-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .accent-badge {
+      align-self: flex-start;
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #0284c7;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      padding: 3px 11px;
+      border-radius: 7px;
+    }
+
+    .accent-badge.slate {
+      color: #475569;
+      background: #ffffff;
+      border-color: #cbd5e1;
+    }
+
+    .code-surface {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px 14px;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .code-surface pre {
+      margin: 0;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #0f172a;
+      font-weight: 600;
+    }
+
+    .code-surface pre code {
+      font-family: inherit;
+      white-space: pre;
+    }
+
+    pre.code-inc {
+      font-size: 18.5px;
+      line-height: 1.45;
+    }
+
+    pre.code-s1 {
+      font-size: clamp(15px, 1.28vw, 17.2px);
+      line-height: 1.62;
+    }
+
+    pre.code-s2 {
+      font-size: clamp(13.4px, 1.14vw, 15px);
+      line-height: 1.46;
+    }
+
+    pre.code-s3 {
+      font-size: clamp(14.2px, 1.22vw, 16px);
+      line-height: 1.5;
+    }
+
+    pre.code-s4 {
+      font-size: clamp(20px, 1.9vw, 24px);
+      line-height: 1.5;
+      text-align: center;
+    }
+
+    /* 克制学术浅底代码语法高亮 */
+    .prep { color: #b45309; font-weight: 700; }
+    .str { color: #047857; font-weight: 700; }
+    .kw { color: #0284c7; font-weight: 800; }
+    .attr { color: #0f766e; font-weight: 800; }
+    .type { color: #6d28d9; font-weight: 700; }
+    .fn { color: #1d4ed8; font-weight: 800; }
+    .num { color: #b45309; font-weight: 700; }
+    .cmt { color: #64748b; font-style: italic; font-weight: 500; }
+
+    /* ================= 第 1 页右侧：指针寻址对比卡片 ================= */
+    .info-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 15px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 11px;
+    }
+
+    .info-card.highlight {
+      border-color: #7dd3fc;
+    }
+
+    .vs-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .vs-box {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      padding: 12px 13px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 7px;
+    }
+
+    .vs-box.target {
+      border-color: #7dd3fc;
+      background: #f0f9ff;
+    }
+
+    .vs-label {
+      font-size: 17.5px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.35;
+    }
+
+    .vs-box.target .vs-label {
+      color: #0284c7;
+    }
+
+    .vs-text {
+      font-size: 17.5px;
+      font-weight: 700;
+      color: #475569;
+      line-height: 1.45;
+    }
+
+    .info-desc {
+      font-size: 19px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.52;
+    }
+
+    /* ================= 第 3 页右侧：四维防御性校验卡片 ================= */
+    .guard-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 11px 15px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 5px;
+    }
+
+    /* ================= 第 3 页右侧：2x2 参数防御性校验网格 ================= */
+    .guard-grid-2x2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .guard-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .guard-card.accent {
+      border-color: #7dd3fc;
+    }
+
+    .guard-head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .guard-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 15px;
+      font-weight: 800;
+      color: #0284c7;
+      background: #f0f9ff;
+      border: 1px solid #bae6fd;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .guard-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .guard-desc {
+      font-size: 17px;
+      font-weight: 700;
+      color: #475569;
+      line-height: 1.45;
+    }
+
+    /* ================= 第 4 页：精简三列核心 PPT 卡片 ================= */
+    .ppt-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    .ppt-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 20px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .ppt-card.accent {
+      border-color: #7dd3fc;
+      background: #f0f9ff;
+    }
+
+    .ppt-card-title {
+      font-size: 21px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .ppt-card.accent .ppt-card-title {
+      color: #0284c7;
+    }
+
+    .ppt-bullets {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .ppt-bullets li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 18.5px;
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+
+    .ppt-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #0284c7;
+      margin-top: 10px;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="ppt-stage">
+    <!-- 顶部固定 60px 导航标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span id="sectionBadge" class="section-pill">1.3.2.2</span>
+        <h1 id="slideTitle" class="slide-title">第二步：将无类型内存转换为 float32 指针</h1>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">&lt;</button>
+        <span id="pageIndicator" class="page-indicator">1 / 4</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">&gt;</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页：1.3.2.2 第二步：将无类型内存转换为 float32 指针 -->
+    <section id="slide-1" class="slide active">
+      <div class="banner-card">
+        确定切片参数与 <span class="inline-code">UB</span> 预算后，需引入 SIMD C API 并将无类型 <span class="inline-code">GM_ADDR</span> 强转为 <span class="inline-code">float32</span> 指针进行元素级偏移寻址：
+      </div>
+
+      <div class="split-132-1">
+        <!-- 左栏：头文件与指针强转偏移代码 -->
+        <div class="col-stack">
+          <div class="code-card">
+            <div class="code-card-head">
+              <span class="accent-badge">引入 SIMD C API 头文件</span>
+            </div>
+            <div class="code-surface">
+              <pre class="code-inc"><code><span class="prep">#include</span> <span class="str">"c_api/asc_simd.h"</span></code></pre>
+            </div>
+          </div>
+
+          <div class="code-card">
+            <div class="code-card-head">
+              <span class="accent-badge">GM_ADDR 指针类型强转与元素级偏移</span>
+            </div>
+            <div class="code-surface">
+              <pre class="code-s1"><code><span class="kw">const</span> <span class="type">uint32_t</span> offset = block_idx * BLOCK_LENGTH;
+<span class="attr">__gm__</span> <span class="type">float</span>* xGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(x) + offset;
+<span class="attr">__gm__</span> <span class="type">float</span>* yGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(y) + offset;
+<span class="attr">__gm__</span> <span class="type">float</span>* zGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(z) + offset;</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右栏：左右对照卡片与编译期零开销说明 -->
+        <div class="col-stack">
+          <div class="info-card">
+            <span class="accent-badge slate">指针寻址步长对比</span>
+            <div class="vs-grid">
+              <div class="vs-box">
+                <span class="vs-label">无类型字节地址：<span class="inline-code">GM_ADDR (void*)</span></span>
+                <span class="vs-text">直接做指针加减按 1 Byte 步进，无法按元素切分</span>
+              </div>
+              <div class="vs-box target">
+                <span class="vs-label">元素级强转指针：<span class="inline-code">__gm__ float*</span></span>
+                <span class="vs-text">reinterpret_cast 强转后 + offset 按 4 Bytes (float32) 步进定位</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="info-card highlight">
+            <span class="accent-badge">编译期零硬件开销</span>
+            <p class="info-desc">
+              指针类型转换与偏移计算不产生任何硬件搬运指令，仅改变 C++ 编译器理解内存地址与计算步长的方式。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 2 页：1.3.2.3 第三步：组装“搬运-计算-写回”数据流 -->
+    <section id="slide-2" class="slide">
+      <div class="banner-card">
+        将硬件初始化、地址定位、片上 UB 分配与读（GM→UB）、算（Vector Add）、写（UB→GM）三阶段流水组装为完整 <span class="inline-code">add_custom</span> Kernel：
+      </div>
+
+      <div class="split-1-1">
+        <!-- 左栏：① 环境初始化、地址定位与片上分配 -->
+        <div class="code-card">
+          <div class="code-card-head">
+            <span class="accent-badge">① 环境初始化、地址定位与片上分配</span>
+          </div>
+          <div class="code-surface">
+            <pre class="code-s2"><code><span class="attr">__vector__</span> <span class="attr">__global__</span> <span class="type">void</span> <span class="fn">add_custom</span>(<span class="type">GM_ADDR</span> x, <span class="type">GM_ADDR</span> y, <span class="type">GM_ADDR</span> z)
+{
+    <span class="cmt">// 1. 初始化 Ascend C 硬件环境。</span>
+    <span class="fn">asc_init</span>();
+
+    <span class="cmt">// 2. 根据逻辑 Block 编号，计算当前任务对应的首地址偏移。</span>
+    <span class="kw">const</span> <span class="type">uint32_t</span> offset = block_idx * BLOCK_LENGTH;
+    <span class="attr">__gm__</span> <span class="type">float</span>* xGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(x) + offset;
+    <span class="attr">__gm__</span> <span class="type">float</span>* yGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(y) + offset;
+    <span class="attr">__gm__</span> <span class="type">float</span>* zGm = <span class="kw">reinterpret_cast</span>&lt;<span class="attr">__gm__</span> <span class="type">float</span>*&gt;(z) + offset;
+
+    <span class="cmt">// 3. 在片上 SRAM (UB) 中开辟局部工作区。</span>
+    <span class="attr">__ubuf__</span> <span class="type">float</span> xLocal[BLOCK_LENGTH];
+    <span class="attr">__ubuf__</span> <span class="type">float</span> yLocal[BLOCK_LENGTH];
+    <span class="attr">__ubuf__</span> <span class="type">float</span> zLocal[BLOCK_LENGTH];</code></pre>
+          </div>
+        </div>
+
+        <!-- 右栏：② 搬运—计算—写回三阶段流水 -->
+        <div class="code-card">
+          <div class="code-card-head">
+            <span class="accent-badge">② 搬运—计算—写回三阶段流水</span>
+          </div>
+          <div class="code-surface">
+            <pre class="code-s2"><code>    <span class="cmt">// 4. 阶段一：GM → UB。搬运长度单位是字节。</span>
+    <span class="fn">asc_copy_gm2ub</span>(xLocal, xGm, BLOCK_LENGTH * <span class="kw">sizeof</span>(<span class="type">float</span>));
+    <span class="fn">asc_copy_gm2ub</span>(yLocal, yGm, BLOCK_LENGTH * <span class="kw">sizeof</span>(<span class="type">float</span>));
+    <span class="fn">asc_sync</span>();
+
+    <span class="cmt">// 5. 阶段二：Vector 在 UB 内完成加法。长度单位是元素个数。</span>
+    <span class="fn">asc_add</span>(zLocal, xLocal, yLocal, BLOCK_LENGTH);
+    <span class="fn">asc_sync</span>();
+
+    <span class="cmt">// 6. 阶段三：UB → GM。</span>
+    <span class="fn">asc_copy_ub2gm</span>(zGm, zLocal, BLOCK_LENGTH * <span class="kw">sizeof</span>(<span class="type">float</span>));
+    <span class="fn">asc_sync</span>();
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 3 页：1.3.3 Host 侧入口签名与参数防御性校验 (1/2) -->
+    <section id="slide-3" class="slide">
+      <div class="split-128-1">
+        <!-- 左栏：run_kernel 函数签名与参数防御性校验代码 -->
+        <div class="code-card">
+          <div class="code-card-head">
+            <span class="accent-badge">extern "C" void run_kernel 签名与防御性校验</span>
+          </div>
+          <div class="code-surface">
+            <pre class="code-s3"><code><span class="kw">extern</span> <span class="str">"C"</span> <span class="type">void</span> <span class="fn">run_kernel</span>(<span class="type">GM_ADDR</span> x, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_x,
+                           <span class="type">GM_ADDR</span> y, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_y,
+                           <span class="type">GM_ADDR</span> z, <span class="kw">const</span> <span class="type">TensorGroupInfo</span>&amp; info_z,
+                           <span class="type">int64_t</span> availableCoreNum, <span class="type">aclrtStream</span> stream)
+{
+    <span class="cmt">// 参数防御性校验。</span>
+    <span class="kw">if</span> (info_x.numTensors != <span class="num">1</span> || info_y.numTensors != <span class="num">1</span> ||
+        info_z.numTensors != <span class="num">1</span> || info_x.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> ||
+        info_y.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> || info_z.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> ||
+        info_x.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        info_y.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        info_z.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        availableCoreNum &lt;= <span class="num">0</span>) {
+        <span class="kw">return</span>;
+    }</code></pre>
+          </div>
+        </div>
+
+        <!-- 右栏：四维防御性校验清单 -->
+        <div class="col-stack-sm">
+          <span class="accent-badge slate">四维防御性校验清单</span>
+
+          <div class="guard-card">
+            <div class="guard-head">
+              <span class="guard-num">1</span>
+              <h2 class="guard-title">张量数量校验 (<span class="inline-code">numTensors != 1</span>)</h2>
+            </div>
+            <p class="guard-desc">确保输入 x、y 与输出 z 均严格包含 1 个有效 Tensor</p>
+          </div>
+
+          <div class="guard-card">
+            <div class="guard-head">
+              <span class="guard-num">2</span>
+              <h2 class="guard-title">数据类型校验 (<span class="inline-code">dtype != 0</span>)</h2>
+            </div>
+            <p class="guard-desc">确认三者数据类型均为约定编码 0（float32），防止位宽错配</p>
+          </div>
+
+        <!-- 右栏：四维防御性校验 2x2 网格 -->
+        <div class="col-stack">
+          <span class="accent-badge slate">四维防御性校验清单 · 保护 NPU 免受非法输入</span>
+
+          <div class="guard-grid-2x2">
+            <div class="guard-card">
+              <div class="guard-head">
+                <span class="guard-num">1</span>
+                <h2 class="guard-title">张量数量 (<span class="inline-code">numTensors != 1</span>)</h2>
+              </div>
+              <p class="guard-desc">确保输入 x、y 与输出 z 均严格包含 1 个有效 Tensor</p>
+            </div>
+
+            <div class="guard-card">
+              <div class="guard-head">
+                <span class="guard-num">2</span>
+                <h2 class="guard-title">数据类型 (<span class="inline-code">dtype != 0</span>)</h2>
+              </div>
+              <p class="guard-desc">确认三者均为约定编码 0（float32），防止位宽错配</p>
+            </div>
+
+            <div class="guard-card">
+              <div class="guard-head">
+                <span class="guard-num">3</span>
+                <h2 class="guard-title">元素长度 (<span class="inline-code">shape[0]</span>)</h2>
+              </div>
+              <p class="guard-desc">严格对齐静态总长 172032，避免多核切片越界访存</p>
+            </div>
+
+            <div class="guard-card accent">
+              <div class="guard-head">
+                <span class="guard-num">4</span>
+                <h2 class="guard-title">可用计算核 (<span class="inline-code">&lt;= 0</span>)</h2>
+              </div>
+              <p class="guard-desc">确保至少分配 1 个 AI Core，异常时提前安全 return</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第 4 页：1.3.3.2 Host 侧异步核函数配置与启动调用 -->
+    <section id="slide-4" class="slide">
+      <!-- 顶部通栏主调用横幅 -->
+      <div class="code-card spotlight">
+        <div class="code-surface" style="padding: 18px 20px;">
+          <pre class="code-s4"><code><span class="fn">add_custom</span><span class="kw">&lt;&lt;&lt;</span>NUM_BLOCKS, <span class="kw">nullptr</span>, stream<span class="kw">&gt;&gt;&gt;</span>(x, y, z);</code></pre>
+        </div>
+      </div>
+
+      <!-- 下方精简三列核心 PPT 卡片 -->
+      <div class="ppt-grid-3">
+        <div class="ppt-card">
+          <h2 class="ppt-card-title">执行配置 <span class="inline-code">&lt;&lt;&lt; ... &gt;&gt;&gt;</span></h2>
+          <ul class="ppt-bullets">
+            <li><span class="ppt-dot"></span><span><span class="inline-code">NUM_BLOCKS</span>（<span class="inline-code">16</span>）：指定启动 16 个逻辑核（Block）并行执行</span></li>
+            <li><span class="ppt-dot"></span><span><span class="inline-code">nullptr</span>（动态资源）：不申请额外动态 UB / L1 空间，使用静态片上缓冲</span></li>
+            <li><span class="ppt-dot"></span><span><span class="inline-code">stream</span>（执行队列）：绑定目标异步流，按序下发至 NPU 调度执行</span></li>
+          </ul>
+        </div>
+
+        <div class="ppt-card">
+          <h2 class="ppt-card-title">核函数实参 <span class="inline-code">(x, y, z)</span></h2>
+          <ul class="ppt-bullets">
+            <li><span class="ppt-dot"></span><span>直接透传 Device 全局内存基址 <span class="inline-code">GM_ADDR</span></span></li>
+            <li><span class="ppt-dot"></span><span>由各 Block 在核函数内部按 <span class="inline-code">block_idx</span> 自行切分偏移</span></li>
+          </ul>
+        </div>
+
+        <div class="ppt-card accent">
+          <h2 class="ppt-card-title">异步下发语义</h2>
+          <ul class="ppt-bullets">
+            <li><span class="ppt-dot"></span><span>Host 端发射任务后立即返回，不阻塞 CPU</span></li>
+            <li><span class="ppt-dot"></span><span>交由外部评测框架统一进行流同步与结果校验</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const slidesData = [
+        { badge: "1.3.2.2", title: "第二步：将无类型内存转换为 float32 指针" },
+        { badge: "1.3.2.3", title: "第三步：组装“搬运-计算-写回”数据流" },
+        { badge: "1.3.3.1", title: "Host 侧入口签名与参数防御性校验" },
+        { badge: "1.3.3.2", title: "Host 侧异步核函数配置与启动调用" }
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = slidesData.length;
+
+      const badgeEl = document.getElementById("sectionBadge");
+      const titleEl = document.getElementById("slideTitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2"),
+        document.getElementById("slide-3"),
+        document.getElementById("slide-4")
+      ];
+
+      function renderSlide() {
+        badgeEl.textContent = slidesData[currentIndex].badge;
+        titleEl.textContent = slidesData[currentIndex].title;
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>

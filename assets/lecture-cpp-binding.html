@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.4.1.1 编译时模板参数与 GM 视图绑定</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .slide-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部固定导航标头 */
+    .ppt-header {
+      height: 64px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 26px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #ffffff;
+      user-select: none;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 5px 12px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .slide-title {
+      font-size: clamp(20px, 2.05vw, 28px);
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 7px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 14.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #334155;
+      min-width: 48px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片页面（严格顶部对齐，无纵向拉伸） */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      flex: 1;
+      padding: 18px 26px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 行内代码胶囊 */
+    .inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      font-weight: 700;
+      color: #0f172a;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 1px 6px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    /* 顶部导语栏 */
+    .summary-strip {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #0284c7;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: clamp(16.5px, 1.45vw, 19.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.48;
+      flex-shrink: 0;
+    }
+
+    /* 双栏对比网格（严格 align-items: start 防止纵向拉长） */
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .compare-grid.s2 {
+      grid-template-columns: 0.94fr 1.06fr;
+      gap: 16px;
+    }
+
+    .compare-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      min-width: 0;
+    }
+
+    .compare-card.c-api {
+      border-top: 3px solid #d97706;
+    }
+
+    .compare-card.cpp-api {
+      border-top: 3px solid #0284c7;
+    }
+
+    .card-header {
+      padding: 10px 14px 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
+      user-select: none;
+    }
+
+    .tag-pill {
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+
+    .compare-card.c-api .tag-pill {
+      color: #b45309;
+    }
+
+    .compare-card.cpp-api .tag-pill {
+      color: #1e3a8a;
+    }
+
+    /* 一键复制按钮 */
+    .copy-btn {
+      font-family: inherit;
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #334155;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      padding: 4px 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .copy-btn:hover {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+      color: #0f172a;
+    }
+
+    .copy-btn.copied {
+      background: #ecfdf5;
+      border-color: #6ee7b7;
+      color: #047857;
+    }
+
+    /* 代码展示区（白底高对比，零水平溢出） */
+    .code-box {
+      background: #ffffff;
+      padding: 14px 16px;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .compare-grid.s2 .code-box {
+      padding: 12px 14px;
+    }
+
+    .code-box pre {
+      margin: 0;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(15.5px, 1.38vw, 18.5px);
+      line-height: 1.52;
+      color: #0f172a;
+      font-weight: 600;
+      user-select: text;
+    }
+
+    .compare-grid.s2 .code-box pre {
+      font-size: clamp(14.5px, 1.3vw, 17.8px);
+      line-height: 1.44;
+    }
+
+    .code-box pre code {
+      font-family: inherit;
+      white-space: pre;
+    }
+
+    /* 学术浅色主题语法高亮 */
+    .kw { color: #1e3a8a; font-weight: 800; }
+    .ty { color: #0f766e; font-weight: 700; }
+    .num { color: #b45309; font-weight: 700; }
+    .fn { color: #1d4ed8; font-weight: 800; }
+    .cm { color: #475569; font-style: italic; font-weight: 500; }
+
+    /* 底部要点提示条 */
+    .bottom-note {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #1e3a8a;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: clamp(16px, 1.42vw, 19px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.46;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="section-pill">1.4.1 从 C API 到 C++ API 的重构三步法</span>
+        <h1 id="slideTitle" class="slide-title">1.4.1.1 编译时模板参数：template &lt;uint32_t blockLength&gt;</h1>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">上一页</button>
+        <span id="pageIndicator" class="page-indicator">1 / 2</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">下一页</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页：1.4.1.1 编译时模板参数 -->
+    <section id="slide-1" class="slide active">
+      <div class="summary-strip">
+        <span class="inline-code">LocalMemAllocator::Alloc&lt;float, blockLength&gt;()</span> 需在编译期获知局部张量长度以规划 UB 固定空间，因此 <span class="inline-code">blockLength</span> 升级为 <span class="inline-code">add_custom</span> 的 C++ 模板参数（Host 侧通过 <span class="inline-code">add_custom&lt;BLOCK_LENGTH&gt;</span> 实例化）。
+      </div>
+
+      <div class="compare-grid">
+        <!-- 左卡：C API 静态宏/常量定义 -->
+        <article class="compare-card c-api">
+          <div class="card-header">
+            <span class="tag-pill">第三节：C API — 静态宏/常量定义</span>
+            <button class="copy-btn" type="button" data-target="code-1-left">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-1-left"><span class="kw">constexpr</span> <span class="ty">uint32_t</span> NUM_BLOCKS = <span class="num">16</span>;
+<span class="kw">constexpr</span> <span class="ty">uint32_t</span> BLOCK_LENGTH = <span class="num">10752</span>;
+<span class="kw">constexpr</span> <span class="ty">int64_t</span> TOTAL_LENGTH =
+    NUM_BLOCKS * BLOCK_LENGTH;</code></pre>
+          </div>
+        </article>
+
+        <!-- 右卡：C++ API 编译期模板化内核 -->
+        <article class="compare-card cpp-api">
+          <div class="card-header">
+            <span class="tag-pill">本节：C++ API — 编译期模板化内核</span>
+            <button class="copy-btn" type="button" data-target="code-1-right">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-1-right"><span class="kw">template</span> &lt;<span class="ty">uint32_t</span> blockLength&gt;
+<span class="kw">__vector__</span> <span class="kw">__global__</span> <span class="ty">void</span> <span class="fn">add_custom</span>(
+    <span class="ty">GM_ADDR</span> x, <span class="ty">GM_ADDR</span> y, <span class="ty">GM_ADDR</span> z)
+{
+    <span class="cm">// blockLength 用于 UB 分配。</span>
+}</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <div class="bottom-note">
+        编译期常量传播：模板参数 <span class="inline-code">blockLength</span> 直接参与片上 UB 静态容量计算，零运行时分支开销。
+      </div>
+    </section>
+
+    <!-- 第 2 页：1.4.1.1 GM 视图绑定 -->
+    <section id="slide-2" class="slide">
+      <div class="summary-strip">
+        <span class="inline-code">GM_ADDR</span> 为无类型字节地址；先经 <span class="inline-code">reinterpret_cast&lt;__gm__ float*&gt;</span> 强转使 <span class="inline-code">+ offset</span> 按 <span class="inline-code">4 B</span> 步长偏移，再通过 <span class="inline-code">SetGlobalBuffer</span> 绑定当前 Block 的 GM 起始地址与元素长度（仅建立视图映射，不触发数据搬运）。
+      </div>
+
+      <div class="compare-grid s2">
+        <!-- 左卡：C API 裸指针偏移 -->
+        <article class="compare-card c-api">
+          <div class="card-header">
+            <span class="tag-pill">第三节：C API — 裸指针偏移</span>
+            <button class="copy-btn" type="button" data-target="code-2-left">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-2-left"><span class="kw">const</span> <span class="ty">uint32_t</span> offset =
+    block_idx * BLOCK_LENGTH;
+<span class="kw">__gm__</span> <span class="ty">float</span>* xGm =
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(x) + offset;
+<span class="kw">__gm__</span> <span class="ty">float</span>* yGm =
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(y) + offset;
+<span class="kw">__gm__</span> <span class="ty">float</span>* zGm =
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(z) + offset;</code></pre>
+          </div>
+        </article>
+
+        <!-- 右卡：C++ API 强类型张量视图绑定 -->
+        <article class="compare-card cpp-api">
+          <div class="card-header">
+            <span class="tag-pill">本节：C++ API — 强类型张量视图绑定</span>
+            <button class="copy-btn" type="button" data-target="code-2-right">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-2-right">AscendC::<span class="ty">GlobalTensor</span>&lt;<span class="ty">float</span>&gt; xGm, yGm, zGm;
+<span class="kw">const</span> <span class="ty">uint32_t</span> offset = block_idx * blockLength;
+xGm.<span class="fn">SetGlobalBuffer</span>(
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(x) + offset, blockLength);
+yGm.<span class="fn">SetGlobalBuffer</span>(
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(y) + offset, blockLength);
+zGm.<span class="fn">SetGlobalBuffer</span>(
+    <span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(z) + offset, blockLength);</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <div class="bottom-note">
+        强类型元数据封装：<span class="inline-code">GlobalTensor</span> 同时携带 <span class="inline-code">float</span> 元素类型与 <span class="inline-code">blockLength</span> 边界信息，消除后续搬运时的字节/元素单位混淆。
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const titles = [
+        "1.4.1.1 编译时模板参数：template <uint32_t blockLength>",
+        "1.4.1.1 GM 视图绑定：GlobalTensor::SetGlobalBuffer"
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = titles.length;
+
+      const titleEl = document.getElementById("slideTitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2")
+      ];
+
+      function renderSlide() {
+        titleEl.textContent = titles[currentIndex];
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      /* 一键复制代码块内容（使用兼容 iFrame 的 execCommand 回退方案） */
+      function copyTextToClipboard(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        let ok = false;
+        try {
+          ok = document.execCommand("copy");
+        } catch (err) {
+          ok = false;
+        }
+        document.body.removeChild(textarea);
+        return ok;
+      }
+
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const targetId = btn.getAttribute("data-target");
+          const codeEl = document.getElementById(targetId);
+          if (!codeEl) return;
+
+          const rawText = codeEl.textContent;
+          if (copyTextToClipboard(rawText)) {
+            btn.textContent = "已复制";
+            btn.classList.add("copied");
+            setTimeout(function () {
+              btn.textContent = "复制";
+              btn.classList.remove("copied");
+            }, 1600);
+          }
+        });
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.6 TensorOJ 实战：Add Medium 的双缓冲流水线</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #E2E8F0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0F172A;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台（严格按 1280x720 比例缩放，零滚动条） */
+    .slide-stage {
+      width: min(96vw, 1280px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #F8FAFC;
+      border-radius: 14px;
+      border: 1px solid #CBD5E1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 顶部固定标头 */
+    .ppt-header {
+      height: 76px;
+      flex-shrink: 0;
+      background: #FFFFFF;
+      border-bottom: 1px solid #CBD5E1;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .accent-bar {
+      width: 6px;
+      height: 32px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, #1E3A8A 0%, #0F766E 100%);
+      flex-shrink: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(16px, 1.35vw, 19px);
+      font-weight: 800;
+      color: #1E3A8A;
+      background: #EFF6FF;
+      border: 1px solid #BFDBFE;
+      padding: 5px 13px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: clamp(22px, 2.2vw, 29px);
+      font-weight: 800;
+      color: #0F172A;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-badge {
+      font-size: clamp(14.5px, 1.18vw, 16.5px);
+      font-weight: 800;
+      color: #1E3A8A;
+      background: #EFF6FF;
+      border: 1px solid #BFDBFE;
+      padding: 6px 14px;
+      border-radius: 9px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* 主体内容容器（严格顶部对齐 flex-start，紧凑间距） */
+    .slide-body {
+      padding: 20px 28px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: stretch;
+      gap: 18px;
+      overflow: hidden;
+    }
+
+    /* 行内关键字胶囊 */
+    .code-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9em;
+      font-weight: 800;
+      color: #1E3A8A;
+      background: #EFF6FF;
+      border: 1px solid #BFDBFE;
+      padding: 1px 7px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .code-chip.amber {
+      color: #B45309;
+      background: #FEF3C7;
+      border-color: #FCD34D;
+    }
+
+    .code-chip.teal {
+      color: #0F766E;
+      background: #CCFBF1;
+      border-color: #5EEAD4;
+    }
+
+    /* ================= 核心演进三列卡片网格（严格 align-items: start） ================= */
+    .progression-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    .prog-card {
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      border-top: 4px solid #1E3A8A;
+      border-radius: 14px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 13px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+    }
+
+    .prog-card.bottleneck {
+      border-top-color: #D97706;
+    }
+
+    .prog-card.conflict {
+      border-top-color: #DC2626;
+    }
+
+    .prog-card.solution {
+      background: #F0FDFA;
+      border-color: #99F6E4;
+      border-top: 4px solid #0F766E;
+    }
+
+    .card-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .step-badge {
+      font-size: clamp(14px, 1.15vw, 16px);
+      font-weight: 800;
+      padding: 4px 11px;
+      border-radius: 7px;
+      letter-spacing: 0.01em;
+    }
+
+    .prog-card.bottleneck .step-badge {
+      color: #B45309;
+      background: #FEF3C7;
+      border: 1px solid #FCD34d;
+    }
+
+    .prog-card.conflict .step-badge {
+      color: #B91C1C;
+      background: #FEF2F2;
+      border: 1px solid #FECACA;
+    }
+
+    .prog-card.solution .step-badge {
+      color: #0F766E;
+      background: #CCFBF1;
+      border: 1px solid #5EEAD4;
+    }
+
+    .step-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 14px;
+      font-weight: 800;
+      color: #64748B;
+    }
+
+    .card-title {
+      font-size: clamp(20px, 1.8vw, 24px);
+      font-weight: 800;
+      color: #0F172A;
+      line-height: 1.3;
+    }
+
+    .prog-card.solution .card-title {
+      color: #0F766E;
+    }
+
+    .bullet-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .bullet-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: clamp(16.5px, 1.44vw, 19.5px);
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.48;
+    }
+
+    .prog-card.solution .bullet-list li {
+      color: #0F172A;
+    }
+
+    .bullet-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-top: 10px;
+      flex-shrink: 0;
+    }
+
+    .prog-card.bottleneck .bullet-dot { background: #D97706; }
+    .prog-card.conflict .bullet-dot { background: #DC2626; }
+    .prog-card.solution .bullet-dot { background: #0F766E; }
+
+    /* ================= 底部紧凑流水线对比条 ================= */
+    .contrast-bar {
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      border-radius: 14px;
+      padding: 15px 20px;
+      display: grid;
+      grid-template-columns: 1fr 1.12fr;
+      gap: 20px;
+      align-items: start;
+      flex-shrink: 0;
+    }
+
+    .pipeline-col {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 9px;
+      min-width: 0;
+    }
+
+    .pipeline-col.right {
+      border-left: 1px solid #E2E8F0;
+      padding-left: 20px;
+    }
+
+    .pipe-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .pipe-label {
+      font-size: clamp(15px, 1.25vw, 17px);
+      font-weight: 800;
+      color: #475569;
+    }
+
+    .pipe-label.good {
+      color: #0F766E;
+    }
+
+    .pipe-tag {
+      font-size: 13px;
+      font-weight: 800;
+      padding: 2px 9px;
+      border-radius: 6px;
+    }
+
+    .pipe-tag.bad {
+      color: #B45309;
+      background: #FEF3C7;
+      border: 1px solid #FCD34D;
+    }
+
+    .pipe-tag.good {
+      color: #0F766E;
+      background: #CCFBF1;
+      border: 1px solid #5EEAD4;
+    }
+
+    /* 串行单缓冲轨道 */
+    .serial-track {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-radius: 10px;
+      padding: 9px 11px;
+    }
+
+    .s-block {
+      flex: 1;
+      border-radius: 7px;
+      padding: 7px 8px;
+      text-align: center;
+      font-size: clamp(14px, 1.18vw, 16px);
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .s-block.mte {
+      background: #EFF6FF;
+      border: 1.5px solid #93C5FD;
+      color: #1E3A8A;
+    }
+
+    .s-block.vec {
+      background: #FEF3C7;
+      border: 1.5px solid #FBBF24;
+      color: #92400E;
+    }
+
+    .s-arrow {
+      font-size: 15px;
+      font-weight: 900;
+      color: #64748B;
+      flex-shrink: 0;
+    }
+
+    /* 双缓冲乒乓并行重叠轨道 */
+    .pingpong-track {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      background: #F0FDFA;
+      border: 1px solid #99F6E4;
+      border-radius: 10px;
+      padding: 9px 11px;
+    }
+
+    .pp-block {
+      border-radius: 7px;
+      padding: 7px 10px;
+      text-align: center;
+      font-size: clamp(14px, 1.18vw, 16px);
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pp-block.buf-a {
+      background: #0F766E;
+      color: #FFFFFF;
+    }
+
+    .pp-block.buf-b {
+      background: #1E3A8A;
+      color: #FFFFFF;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="accent-bar"></span>
+        <span class="section-pill">1.6</span>
+        <h1 class="slide-title">1.6 TensorOJ 实战：Add Medium 的双缓冲流水线</h1>
+      </div>
+      <span class="header-badge">TensorOJ Add Medium · 性能优化篇</span>
+    </header>
+
+    <!-- 主体内容区（严格顶部对齐，紧凑包裹） -->
+    <main class="slide-body">
+      <!-- 核心演进三列网格 -->
+      <section class="progression-grid">
+        <!-- Card 1：现状瓶颈 · 串行交替空转 -->
+        <article class="prog-card bottleneck">
+          <div class="card-top-row">
+            <span class="step-badge">现状瓶颈 · 串行交替空转</span>
+            <span class="step-num">01</span>
+          </div>
+          <h2 class="card-title">硬件独立却被迫串行互等</h2>
+          <ul class="bullet-list">
+            <li>
+              <span class="bullet-dot"></span>
+              <span><span class="code-chip">Tile</span> 循环虽已解决片上 UB 容量溢出，但 <span class="code-chip amber">MTE</span> 与 <span class="code-chip amber">Vector</span> 仍串行交替运行。</span>
+            </li>
+            <li>
+              <span class="bullet-dot"></span>
+              <span><strong>Vector 计算</strong>时 MTE 只能闲置；<strong>MTE 搬运</strong>时 Vector 只能等待，算力未饱和。</span>
+            </li>
+          </ul>
+        </article>
+
+        <!-- Card 2：并发矛盾 · 单缓冲数据竞争 -->
+        <article class="prog-card conflict">
+          <div class="card-top-row">
+            <span class="step-badge">并发矛盾 · 单缓冲数据竞争</span>
+            <span class="step-num">02</span>
+          </div>
+          <h2 class="card-title">单套工作区无法安全预读</h2>
+          <ul class="bullet-list">
+            <li>
+              <span class="bullet-dot"></span>
+              <span>消除空转的核心在于让<strong>「计算当前 Tile」</strong>与<strong>「搬运下一 Tile」</strong>同时进行。</span>
+            </li>
+            <li>
+              <span class="bullet-dot"></span>
+              <span>单缓冲区下直接预读会直接覆盖当前正在计算的片上数据，引发<strong>数据竞争</strong>。</span>
+            </li>
+          </ul>
+        </article>
+
+        <!-- Card 3：破局方案 · 双缓冲乒乓机制 -->
+        <article class="prog-card solution">
+          <div class="card-top-row">
+            <span class="step-badge">破局方案 · 双缓冲乒乓机制</span>
+            <span class="step-num">03</span>
+          </div>
+          <h2 class="card-title">双套轮换 UB 并发重叠</h2>
+          <ul class="bullet-list">
+            <li>
+              <span class="bullet-dot"></span>
+              <span>引入<strong>双缓冲 (Double Buffering)</strong>：开辟两套交替轮换的片上 <span class="code-chip teal">UB</span> 缓冲区（乒乓机制）。</span>
+            </li>
+            <li>
+              <span class="bullet-dot"></span>
+              <span>实现<strong>内存搬运与向量计算并发重叠</strong>，彻底拉满 AI Core 硬件算力利用率。</span>
+            </li>
+          </ul>
+        </article>
+      </section>
+
+      <!-- 底部流水线对比横幅 -->
+      <footer class="contrast-bar">
+        <!-- 左侧：单缓冲串行执行 -->
+        <div class="pipeline-col">
+          <div class="pipe-label-row">
+            <span class="pipe-label">单缓冲串行执行（硬件交替空转）</span>
+            <span class="pipe-tag bad">串行互斥</span>
+          </div>
+          <div class="serial-track">
+            <span class="s-block mte">[ MTE 搬运 ]</span>
+            <span class="s-arrow">→</span>
+            <span class="s-block vec">[ Vector 计算 ]</span>
+            <span class="s-arrow">→</span>
+            <span class="s-block mte">[ MTE 搬运 ]</span>
+          </div>
+        </div>
+
+        <!-- 右侧：双缓冲乒乓并发重叠 -->
+        <div class="pipeline-col right">
+          <div class="pipe-label-row">
+            <span class="pipe-label good">双缓冲乒乓机制（计算与搬运同步推进）</span>
+            <span class="pipe-tag good">并发重叠</span>
+          </div>
+          <div class="pingpong-track">
+            <span class="pp-block buf-a">Buffer A：Vector 计算当前 Tile</span>
+            <span class="pp-block buf-b">Buffer B：MTE 并行搬运下一 Tile</span>
+          </div>
+        </div>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

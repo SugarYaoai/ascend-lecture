@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.5 TensorOJ 实战：Add Medium 的 Tile 分块</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #f1f5f9;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台（1280x720 比例自适应缩放） */
+    .slide-stage {
+      width: min(96vw, 1280px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #f8fafc;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部固定标头（零切换抖动） */
+    .ppt-header {
+      height: 74px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #ffffff;
+      user-select: none;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(13.5px, 1.15vw, 15.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 6px 12px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .slide-title {
+      font-size: clamp(19px, 1.9vw, 26px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      height: 32px;
+      padding: 0 11px;
+      border-radius: 7px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 14.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #334155;
+      min-width: 48px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片页面容器（严格顶部对齐，绝不纵向拉伸卡片） */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      flex: 1;
+      padding: 20px 28px 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 内联代码胶囊 */
+    .inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      font-weight: 700;
+      color: #1e3a8a;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 1px 6px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    /* ================= 第 1 页：题目链接胶囊 + 计算公式卡 + 三列关键指标 ================= */
+    .top-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .link-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #1e3a8a;
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-size: clamp(15px, 1.3vw, 17.5px);
+      font-weight: 800;
+      color: #0f172a;
+    }
+
+    .link-badge span.link-name {
+      color: #0284c7;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .dtype-badge {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      padding: 9px 15px;
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+    }
+
+    .formula-hero-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #1e3a8a;
+      border-radius: 14px;
+      padding: 18px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .formula-caption {
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #475569;
+    }
+
+    .math-hero {
+      font-family: "Cambria Math", "Times New Roman", Georgia, serif;
+      font-size: clamp(26px, 2.65vw, 35px);
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: 0.02em;
+    }
+
+    .math-hero var {
+      font-style: italic;
+    }
+
+    .math-hero sub {
+      font-size: 0.68em;
+    }
+
+    .metric-grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    .metric-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #0284c7;
+      border-radius: 14px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 10px;
+    }
+
+    .metric-card.conflict {
+      background: #fffbeb;
+      border-color: #fde68a;
+      border-top: 3px solid #f59e0b;
+    }
+
+    .metric-tag {
+      align-self: flex-start;
+      font-size: clamp(14px, 1.15vw, 16px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 3px 10px;
+      border-radius: 7px;
+    }
+
+    .metric-card.conflict .metric-tag {
+      color: #b45309;
+      background: #fef3c7;
+      border-color: #fcd34d;
+    }
+
+    .metric-main {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(20px, 1.95vw, 26px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-card.conflict .metric-main {
+      font-family: inherit;
+      font-size: clamp(17.5px, 1.6vw, 21.5px);
+      color: #92400e;
+      line-height: 1.42;
+    }
+
+    .metric-desc {
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.45;
+    }
+
+    /* ================= 第 2 页：左右两栏容量核算与硬件物理约束 ================= */
+    .grid-2-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #1e3a8a;
+      border-radius: 14px;
+      padding: 20px 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 15px;
+    }
+
+    .panel-card.amber {
+      background: #fffbeb;
+      border-color: #f59e0b;
+      border-top: 4px solid #f59e0b;
+    }
+
+    .panel-badge {
+      align-self: flex-start;
+      font-size: clamp(14.5px, 1.2vw, 17px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 12px;
+      border-radius: 7px;
+    }
+
+    .panel-card.amber .panel-badge {
+      color: #b45309;
+      background: #fef3c7;
+      border-color: #fcd34d;
+    }
+
+    .calc-step {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 13px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .calc-step.highlight {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+
+    .calc-label {
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #475569;
+    }
+
+    .calc-formula {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(17px, 1.55vw, 21.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .panel-note {
+      font-size: clamp(15.5px, 1.35vw, 18.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+
+    .cap-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .cap-box {
+      background: #ffffff;
+      border: 1px solid #fde68a;
+      border-radius: 10px;
+      padding: 13px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .cap-box.danger {
+      background: #fef3c7;
+      border-color: #f59e0b;
+    }
+
+    .cap-title {
+      font-size: clamp(14px, 1.15vw, 16px);
+      font-weight: 800;
+      color: #78350f;
+    }
+
+    .cap-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(22px, 2vw, 27px);
+      font-weight: 800;
+      color: #0f172a;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cap-box.danger .cap-num {
+      color: #b45309;
+    }
+
+    .cap-sub {
+      font-size: clamp(13.5px, 1.12vw, 15px);
+      font-weight: 800;
+      color: #92400e;
+    }
+
+    .amber-callout {
+      background: #ffffff;
+      border: 1px solid #fcd34d;
+      border-left: 4px solid #f59e0b;
+      border-radius: 10px;
+      padding: 13px 16px;
+      font-size: clamp(15.5px, 1.35vw, 18.5px);
+      font-weight: 700;
+      color: #78350f;
+      line-height: 1.5;
+    }
+
+    /* ================= 第 3 页：左栏两张卡片 + 右栏深色代码块与说明 ================= */
+    .col-stack {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .info-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #1e3a8a;
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 11px;
+    }
+
+    .info-card.teal {
+      background: #f0fdfa;
+      border-color: #99f6e4;
+      border-top: 3px solid #0f766e;
+    }
+
+    .card-badge {
+      align-self: flex-start;
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 11px;
+      border-radius: 7px;
+    }
+
+    .info-card.teal .card-badge {
+      color: #0f766e;
+      background: #ccfbf1;
+      border-color: #5eead4;
+    }
+
+    .bullet-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .bullet-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.45;
+    }
+
+    .bullet-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #1e3a8a;
+      margin-top: 9px;
+      flex-shrink: 0;
+    }
+
+    .info-card.teal .bullet-dot {
+      background: #0f766e;
+    }
+
+    .tile-formula {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(17.5px, 1.55vw, 21px);
+      font-weight: 800;
+      color: #0f766e;
+      background: #ffffff;
+      border: 1px solid #99f6e4;
+      padding: 8px 14px;
+      border-radius: 9px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 深色语法高亮代码面板 (#1e1e1e) */
+    .dark-code-card {
+      background: #1e1e1e;
+      border: 1px solid #334155;
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      min-width: 0;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+    }
+
+    .dark-code-header {
+      background: #252526;
+      border-bottom: 1px solid #333333;
+      padding: 10px 14px 10px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      user-select: none;
+    }
+
+    .dark-code-lang {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 14px;
+      font-weight: 700;
+      color: #cbd5e1;
+      letter-spacing: 0.02em;
+    }
+
+    .dark-copy-btn {
+      font-family: inherit;
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #e2e8f0;
+      background: #334155;
+      border: 1px solid #475569;
+      border-radius: 7px;
+      padding: 4px 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .dark-copy-btn:hover {
+      background: #475569;
+      color: #ffffff;
+    }
+
+    .dark-copy-btn.copied {
+      background: #065f46;
+      border-color: #10b981;
+      color: #ecfdf5;
+    }
+
+    .dark-code-body {
+      padding: 16px 18px;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .dark-code-body pre {
+      margin: 0;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(14px, 1.24vw, 16.6px);
+      line-height: 1.62;
+      color: #d4d4d4;
+      font-weight: 500;
+      user-select: text;
+    }
+
+    .dark-code-body pre code {
+      font-family: inherit;
+      white-space: pre;
+    }
+
+    /* VS Code Dark+ 语法高亮配色 */
+    .dk-kw { color: #569cd6; font-weight: 700; }
+    .dk-ty { color: #4ec9b0; font-weight: 600; }
+    .dk-num { color: #b5cea8; font-weight: 600; }
+    .dk-cm { color: #6a9955; font-style: italic; }
+
+    .caption-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #0284c7;
+      border-radius: 12px;
+      padding: 14px 18px;
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span id="sectionPill" class="section-pill">1.5 TensorOJ 实战：Add Medium 的 Tile 分块</span>
+        <h1 id="slideTitle" class="slide-title">1.5.1 问题引入：更大数据量带来的片上内存挑战</h1>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">上一页</button>
+        <span id="pageIndicator" class="page-indicator">1 / 3</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">下一页</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页：1.5.1 问题引入：更大数据量带来的片上内存挑战 -->
+    <section id="slide-1" class="slide active">
+      <div class="top-meta-row">
+        <div class="link-badge">
+          本节题目链接：<span class="link-name">TensorOJ Add Medium</span>
+        </div>
+        <div class="dtype-badge">
+          计算类型：<span class="inline-code">float32</span> 一维向量逐元素加法
+        </div>
+      </div>
+
+      <div class="formula-hero-card">
+        <span class="formula-caption">向量加法计算公式</span>
+        <div class="math-hero">
+          <var>z</var><sub><var>i</var></sub> = <var>x</var><sub><var>i</var></sub> + <var>y</var><sub><var>i</var></sub>, &nbsp;&nbsp; <var>i</var> &isin; [0, 1048576)
+        </div>
+      </div>
+
+      <div class="metric-grid-3">
+        <article class="metric-card">
+          <span class="metric-tag">① 任务规模扩大</span>
+          <div class="metric-main">N = 1,048,576</div>
+          <p class="metric-desc">单次任务数据规模扩大至百万级 <span class="inline-code">float32</span> 元素</p>
+        </article>
+
+        <article class="metric-card">
+          <span class="metric-tag">② 多核均分负载</span>
+          <div class="metric-main">16 个 Block</div>
+          <p class="metric-desc">固定启动 <span class="inline-code">16</span> 个 Block，单 Block 需处理 <span class="inline-code">65,536</span> 个元素</p>
+        </article>
+
+        <article class="metric-card conflict">
+          <span class="metric-tag">③ 核心物理矛盾</span>
+          <div class="metric-main">单 Block 输入 x, y 与输出 z 无法一次性放入片上 UB</div>
+          <p class="metric-desc">全量驻留需求远超单个 AI Core 片上 SRAM 容量</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 第 2 页：1.5.2.1 为什么仅靠 Block 切分还不够 -->
+    <section id="slide-2" class="slide">
+      <div class="grid-2-col">
+        <!-- 左卡：单核负载与 UB 需求测算 -->
+        <article class="panel-card">
+          <span class="panel-badge">单核负载与 UB 需求测算</span>
+
+          <div class="calc-step">
+            <span class="calc-label">1. 长度 1048576 均分给 16 个 Block</span>
+            <div class="calc-formula">BLOCK_LENGTH = 1048576 / 16 = 65536</div>
+          </div>
+
+          <div class="calc-step highlight">
+            <span class="calc-label">2. 同时驻留 x、y、z 三份 float32 缓冲区</span>
+            <div class="calc-formula">3 × 65536 × 4 B = 768 KB</div>
+          </div>
+
+          <p class="panel-note">
+            <strong>Block 切分</strong>仅解决多核并行分工、缩短整体运行时间，无法突破单个 AI Core 内部 <span class="inline-code">UB</span> 的物理容量上限。
+          </p>
+        </article>
+
+        <!-- 右卡：硬件约束（UB 物理上限） -->
+        <article class="panel-card amber">
+          <span class="panel-badge">硬件约束（UB 物理上限）</span>
+
+          <div class="cap-grid">
+            <div class="cap-box">
+              <span class="cap-title">单个 AI Core UB 名义容量</span>
+              <span class="cap-num">256 KB</span>
+              <span class="cap-sub">片上 SRAM 物理上限</span>
+            </div>
+
+            <div class="cap-box danger">
+              <span class="cap-title">全量载入所需 UB 空间</span>
+              <span class="cap-num">768 KB</span>
+              <span class="cap-sub">达到物理上限的 3 倍</span>
+            </div>
+          </div>
+
+          <div class="amber-callout">
+            这不是性能较差，而是片上 SRAM 容量硬性不足；若强行静态全量分配，代码会在<strong>编译期或运行初期直接失败</strong>。
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- 第 3 页：1.5.2.2 Block 与 Tile 构成两级切分 -->
+    <section id="slide-3" class="slide">
+      <div class="grid-2-col">
+        <!-- 左栏：两张紧凑卡片 -->
+        <div class="col-stack">
+          <article class="info-card">
+            <span class="card-badge">Card 1 · 两级切分分工</span>
+            <ul class="bullet-list">
+              <li>
+                <span class="bullet-dot"></span>
+                <span><strong>Block 切分（空间并行）</strong>：<span class="inline-code">16</span> 个 Block 分管不同 GM 区间，实现多核并行</span>
+              </li>
+              <li>
+                <span class="bullet-dot"></span>
+                <span><strong>Tile 切分（时间复用）</strong>：单核内用 <span class="inline-code">for</span> 循环复用同一组 UB 空间，分批完成数据</span>
+              </li>
+            </ul>
+          </article>
+
+          <article class="info-card teal">
+            <span class="card-badge">Card 2 · 单 Tile 内存占用</span>
+            <div class="tile-formula">3 × 8192 × 4 B = 96 KB</div>
+            <ul class="bullet-list">
+              <li>
+                <span class="bullet-dot"></span>
+                <span>选定 <span class="inline-code">TILE_LENGTH = 8192</span>（满足 <span class="inline-code">32 B</span> 对齐且留有 UB 余量）</span>
+              </li>
+              <li>
+                <span class="bullet-dot"></span>
+                <span>任意时刻仅 <span class="inline-code">96 KB</span> 驻留 UB，取代不可容纳的 <span class="inline-code">768 KB</span></span>
+              </li>
+            </ul>
+          </article>
+        </div>
+
+        <!-- 右栏：深色 C++ 代码块 + 8 次循环说明 -->
+        <div class="col-stack">
+          <article class="dark-code-card">
+            <div class="dark-code-header">
+              <span class="dark-code-lang">C++ · 两级切分静态配置</span>
+              <button class="dark-copy-btn" type="button" data-target="code-tile-s3">复制</button>
+            </div>
+            <div class="dark-code-body">
+              <pre><code id="code-tile-s3"><span class="dk-kw">constexpr</span> <span class="dk-ty">uint32_t</span> NUM_BLOCKS = <span class="dk-num">16</span>;
+<span class="dk-kw">constexpr</span> <span class="dk-ty">uint32_t</span> BLOCK_LENGTH = <span class="dk-num">65536</span>;
+<span class="dk-kw">constexpr</span> <span class="dk-ty">uint32_t</span> TILE_LENGTH = <span class="dk-num">8192</span>;
+<span class="dk-kw">constexpr</span> <span class="dk-ty">uint32_t</span> TILE_NUM = BLOCK_LENGTH / TILE_LENGTH;
+<span class="dk-cm">// 每个 Block 循环 8 次。</span></code></pre>
+            </div>
+          </article>
+
+          <div class="caption-card">
+            每个 Block 通过 <span class="inline-code">TILE_NUM = 8</span> 次循环依次搬入、计算并写回一个 <span class="inline-code">8192</span> 元素的 Tile，稳妥完成全部 <span class="inline-code">65536</span> 个元素。
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const slidesMeta = [
+        {
+          pill: "1.5 TensorOJ 实战：Add Medium 的 Tile 分块",
+          title: "1.5.1 问题引入：更大数据量带来的片上内存挑战"
+        },
+        {
+          pill: "1.5.2 片上内存瓶颈与 Tile 切分的必要性",
+          title: "1.5.2.1 为什么仅靠 Block 切分还不够"
+        },
+        {
+          pill: "1.5.2 片上内存瓶颈与 Tile 切分的必要性",
+          title: "1.5.2.2 Block 与 Tile 构成两级切分"
+        }
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = slidesMeta.length;
+
+      const pillEl = document.getElementById("sectionPill");
+      const titleEl = document.getElementById("slideTitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2"),
+        document.getElementById("slide-3")
+      ];
+
+      function renderSlide() {
+        const meta = slidesMeta[currentIndex];
+        pillEl.textContent = meta.pill;
+        titleEl.textContent = meta.title;
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      /* 一键复制代码块内容（使用兼容 iFrame 的 execCommand 方案） */
+      function copyTextToClipboard(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        let ok = false;
+        try {
+          ok = document.execCommand("copy");
+        } catch (err) {
+          ok = false;
+        }
+        document.body.removeChild(textarea);
+        return ok;
+      }
+
+      document.querySelectorAll(".dark-copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const targetId = btn.getAttribute("data-target");
+          const codeEl = document.getElementById(targetId);
+          if (!codeEl) return;
+
+          const rawText = codeEl.textContent;
+          if (copyTextToClipboard(rawText)) {
+            btn.textContent = "已复制";
+            btn.classList.add("copied");
+            setTimeout(function () {
+              btn.textContent = "复制";
+              btn.classList.remove("copied");
+            }, 1600);
+          }
+        });
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>

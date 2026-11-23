@@ -512,6 +512,7 @@
 <body>
   <header class="topbar">
     <div class="brand">Ascend C <span>动手学昇腾算子开发</span></div>
+    <a href="videos.html" style="color:inherit;margin-left:auto;white-space:nowrap">视频专区</a>
     <div class="reading-progress" aria-hidden="true"><span id="reading-progress-bar"></span></div>
   </header>
   <div class="shell">
@@ -522,6 +523,11 @@
     <main>
       <article id="content"><p class="loading">正在加载讲义...</p></article>
     </main>
+    <section id="deckRail" hidden aria-label="配套课件">
+      <strong>配套课件</strong> <span id="deckPage"></span>
+      <div id="deckThumb"><iframe id="deckFrame" title="配套演示课件" src="assets/lecture-slides.html"></iframe></div>
+      <button id="deckOpen" type="button">展开课件 ↗</button>
+    </section>
   </div>
   <div class="image-lightbox" id="image-lightbox" role="dialog" aria-modal="true" aria-label="放大图片">
     <div>
@@ -803,6 +809,7 @@
         enhanceGlossaryTerms();
         enhanceImages();
         buildToc();
+        setupDeck();
         updateReadingProgress();
         window.addEventListener("scroll", updateReadingProgress, { passive: true });
         window.addEventListener("resize", updateReadingProgress);
@@ -810,6 +817,102 @@
       .catch((error) => {
         content.innerHTML = `<p class="error">${error.message}</p>`;
       });
+  </script>
+  <dialog id="deckDialog" aria-label="章节课件"><nav id="deckNav"><button id="deckPrev" aria-label="上一页">‹</button><span id="deckCount" aria-live="polite"></span><button id="deckNext" aria-label="下一页">›</button><label>缩放 <select id="deckZoom" aria-label="课件缩放比例"><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="1.75">175%</option><option value="2">200%</option></select></label><button id="deckReset" type="button">恢复默认</button><button type="button" id="deckClose">返回阅读 ×</button></nav><div id="deckStage"></div></dialog>
+  <style>
+    #deckRail{position:sticky;top:82px;align-self:start;margin:24px 12px;padding:12px;background:#edf2f7;color:#193755;min-width:0}
+    #deckPage{font-size:13px}
+    #deckNav{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}#deckCount{font-variant-numeric:tabular-nums}
+    #deckZoom{padding:6px;font:inherit}#deckStage{overflow:auto!important}
+    .deck-chip{margin-inline-start:10px;vertical-align:middle;padding:3px 8px;border:1px solid #bdd2df;border-radius:4px;background:#edf5fa;color:#235876;font:500 12px/1.5 system-ui;cursor:pointer;white-space:nowrap}
+    .margin-slides{display:none}
+    @media(min-width:1250px){
+      .shell:has(.margin-slides){width:min(1770px,100%);grid-template-columns:var(--sidebar-width) minmax(0,1fr) clamp(230px,21vw,330px)}
+      .margin-slides{display:block;position:relative;min-width:0;margin-inline:14px}
+      .margin-thumb{position:absolute;left:0;width:100%;padding:0;border:0;background:transparent;color:#476378;text-align:left;font:500 12px/1.8 system-ui;cursor:zoom-in}
+      .margin-thumb img{width:100%;aspect-ratio:16/9;display:block;border:1px solid #d1dde5}
+    }
+    .paired{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:24px;align-items:start;padding-top:24px}
+    .paired>div{min-width:0}.paired>div>:first-child{margin-top:0}
+    article:has(.paired){max-width:1120px}
+    .slide-note{width:100%;background:transparent;border:0;padding:0;text-align:left;color:#45617b;cursor:zoom-in}
+    article .slide-note img{width:100%;aspect-ratio:16/9;display:block;margin:0 0 5px}
+    @media(max-width:920px){.paired{display:flex;flex-direction:column;gap:10px}.slide-note{max-width:380px}}
+    .shell:has(#deckRail:not([hidden])){grid-template-columns:var(--sidebar-width) minmax(0,1fr) minmax(240px,25%)}
+    .shell:has(#deckRail:not([hidden])) main{padding-inline:clamp(20px,3vw,46px)}
+    #deckThumb,#deckStage{overflow:hidden;position:relative}
+    #deckThumb{aspect-ratio:16/9;margin:10px 0;background:white;pointer-events:none}
+    #deckFrame{width:1280px;height:720px;border:0;position:absolute;transform-origin:top left}
+    #deckDialog{width:min(96vw,1500px);max-width:96vw;padding:10px;border:0;background:#edf2f7}
+    #deckStage{width:100%;height:min(54vw,80vh)}
+    #deckDialog::backdrop{background:#102130cc}
+    #deckRail button,#deckDialog button{cursor:pointer;padding:7px 12px;border:1px solid #a8bacb;background:white;color:#173a63;border-radius:4px}
+    #deckClose{display:block;margin:0 0 6px auto}
+    @media(max-width:1050px){.shell:has(#deckRail:not([hidden])){grid-template-columns:var(--sidebar-width) minmax(0,1fr)}#deckRail{position:fixed;top:auto;bottom:12px;right:8px;z-index:4;margin:0}#deckThumb,#deckRail strong{display:none}}
+    @media(max-width:760px){.shell:has(#deckRail:not([hidden])){grid-template-columns:minmax(0,1fr)}}
+  </style>
+  <script>
+    function setupDeck(){
+      const videoHeading=[...content.querySelectorAll('h3')].find(h=>/^1\.1\s/.test(h.textContent.trim()));
+      if(videoHeading){const anchor=document.createElement('span');anchor.id='lesson-1-1';videoHeading.before(anchor);}
+      const ids=['1.1.1','1.1.2','1.1.2.1','1.1.2.2','1.2','1.2.1','1.2.2.1','1.2.2.1','1.2.2.2','1.2.3.1','1.2.3.2','1.2.3.3','1.2.3','1.2.4','1.3','1.3','1.3.1','1.3.1','1.3.2.1','1.3.2.1','1.3.2.2','1.3.2.3','1.3.3.1','1.3.3.2'];
+      ids.push('1.3.4','1.3.4','1.4','1.4.1.1','1.4.1.1','1.4.1.2','1.4.1.3','1.4.2','1.4.3','1.4.3','1.5.1','1.5.2.1','1.5.2.2','1.5.3','1.5.3','1.5.4.1','1.5.4.2');
+      ids.push('1.6');
+      const frame=document.querySelector('#deckFrame'),dialog=document.querySelector('#deckDialog'),stage=document.querySelector('#deckStage');
+      stage.append(frame);document.querySelector('#deckRail').remove();
+      let selected=0;
+      const zoomControl=document.querySelector('#deckZoom'),zoomKey='ascend-lecture-section-zoom-v1';
+      zoomControl.parentElement.hidden=true;
+      const sizeKey='ascend-lecture-section-size-v1';let sizes={};try{sizes=JSON.parse(localStorage.getItem(sizeKey)||'{}')||{};}catch{}
+      stage.style.resize='both';stage.style.minWidth='280px';stage.style.minHeight='240px';stage.style.maxWidth='100%';stage.style.maxHeight='80vh';stage.style.border='1px solid #9eb6c9';
+      const hint=document.createElement('span');hint.textContent='拖动右下角调整宽高';hint.style.fontSize='12px';document.querySelector('#deckNav').insertBefore(hint,document.querySelector('#deckReset'));
+      let restoring=false;
+      function restoreSize(){restoring=true;const saved=sizes[section(selected)];stage.style.width=saved?Math.min(saved.width,dialog.clientWidth-20)+'px':'100%';stage.style.height=saved?saved.height+'px':'min(54vw,80vh)';requestAnimationFrame(()=>{restoring=false;});}
+      let zooms={};try{zooms=JSON.parse(localStorage.getItem(zoomKey)||'{}')||{};}catch{}
+      const surface=document.createElement('div');surface.style.position='relative';stage.append(surface);surface.append(frame);
+      function ratio(){const value=Number(zooms[section(selected)]);return [0.5,0.75,1,1.25,1.5,1.75,2].includes(value)?value:1;}
+      function fit(){if(!stage.clientWidth)return;
+        surface.style.width='100%';surface.style.height='100%';
+        frame.style.width=stage.clientWidth+'px';frame.style.height=stage.clientHeight+'px';frame.style.transform='none';frame.style.left='0';frame.style.top='0';}
+      function setZoom(value){zooms[section(selected)]=value;try{localStorage.setItem(zoomKey,JSON.stringify(zooms));}catch{}stage.scrollTo(0,0);fit();}
+      zoomControl.onchange=()=>setZoom(Number(zoomControl.value));
+      document.querySelector('#deckReset').onclick=()=>{delete sizes[section(selected)];try{localStorage.setItem(sizeKey,JSON.stringify(sizes));}catch{}restoreSize();fit();};
+      new ResizeObserver(()=>{if(!dialog.open||restoring)return;sizes[section(selected)]={width:stage.offsetWidth,height:stage.offsetHeight};try{localStorage.setItem(sizeKey,JSON.stringify(sizes));}catch{}}).observe(stage);
+      const prev=document.querySelector('#deckPrev'),next=document.querySelector('#deckNext');
+      const section=i=>ids[i].split('.').slice(0,2).join('.');
+      function source(i){return i<7?['lecture-slides',i]:i<12?['lecture-add',i-7]:i<14?['lecture-host',i-12]:i<20?['lecture-judge',i-14]:i<24?['lecture-judge-code',i-20]:i<26?['lecture-judge-full',i-24]:i<27?['lecture-cpp',i-26]:i<29?['lecture-cpp-binding',i-27]:i<31?['lecture-cpp-memory',i-29]:i<32?['lecture-cpp-comparison',i-31]:i<34?['lecture-cpp-full',i-32]:i<37?['lecture-tile',i-34]:i<39?['lecture-tile-loop',i-37]:i<41?['lecture-tile-wait',i-39]:['lecture-double-buffer',i-41];}
+      function go(i){selected=i;const group=ids.map((_,p)=>p).filter(p=>section(p)===section(i)),n=group.indexOf(i);
+        restoreSize();stage.scrollTo(0,0);fit();
+        document.querySelector('#deckCount').textContent=section(i)+' 节 · '+(n+1)+' / '+group.length;
+        prev.disabled=n===0;next.disabled=n===group.length-1;
+        const [name,local]=source(i),src='assets/'+name+'.html';
+        if(frame.getAttribute('src')!==src)frame.src=src;else frame.contentWindow.setLecturePage?.(local);
+      }
+      prev.onclick=()=>go(selected-1);next.onclick=()=>go(selected+1);
+      function keys(e){if(!dialog.open)return;if(['ArrowLeft','PageUp','ArrowRight','PageDown','Escape'].includes(e.key)||(e.key===' '&&e.target.tagName!=='BUTTON')){
+        e.preventDefault();e.stopImmediatePropagation();if(e.key==='Escape')dialog.close();else if(['ArrowLeft','PageUp'].includes(e.key))prev.click();else next.click();}}
+      dialog.addEventListener('keydown',keys,true);
+      frame.onload=()=>{const doc=frame.contentDocument;for(const id of ['prevBtn','nextBtn','pageIndicator','pageCounter'])doc.getElementById(id)?.style.setProperty('display','none');
+        frame.contentWindow.setLecturePage?.(source(selected)[1]);doc.addEventListener('keydown',keys,true);};
+      document.querySelector('#deckClose').onclick=()=>dialog.close();new ResizeObserver(fit).observe(stage);
+      const margin=document.createElement('div');margin.className='margin-slides';document.querySelector('.shell').append(margin);
+      const notes=[];
+      for(const node of content.querySelectorAll('h3,h4,h5')){
+        const title=node.textContent.trim(),key=title.split(/\s+/)[0];
+        for(const [page,id] of ids.entries()){
+        if(key!==id)continue;
+        const ordinal=ids.slice(0,page+1).filter((_,p)=>section(p)===section(page)).length;
+        const label='课件 '+String(ordinal).padStart(2,'0')+(page===6?' · Block 划分':page===7?' · UB 容量预算':'');
+        const open=()=>{dialog.showModal();go(page);fit();frame.focus();};
+        const chip=document.createElement('button');chip.type='button';chip.className='deck-chip';chip.textContent=label;chip.title='展开：'+title;chip.onclick=open;node.append(chip);
+        const thumb=document.createElement('button');thumb.type='button';thumb.className='margin-thumb';thumb.onclick=open;thumb.setAttribute('aria-label','展开'+label+'：'+title);
+        const img=new Image();img.src='assets/slide-'+page+'.jpg';img.alt='';thumb.append(img,label);margin.append(thumb);notes.push([node,thumb]);
+        }
+      }
+      function align(){if(!margin.clientWidth)return;const origin=margin.getBoundingClientRect().top;let next=0;
+        for(const [heading,thumb] of notes){const top=Math.max(next,heading.getBoundingClientRect().top-origin);thumb.style.top=top+'px';next=top+thumb.offsetHeight+18;}}
+      new ResizeObserver(align).observe(content);new ResizeObserver(align).observe(margin);document.fonts.ready.then(align);align();
+    }
   </script>
 </body>
 </html>

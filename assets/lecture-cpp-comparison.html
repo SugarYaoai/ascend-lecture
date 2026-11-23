@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.4.2 C API 与 C++ API 的代码组织差异</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .slide-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 顶部固定标头 */
+    .ppt-header {
+      height: 66px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #ffffff;
+      user-select: none;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .accent-bar {
+      width: 5px;
+      height: 28px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, #1d4ed8 0%, #0f766e 100%);
+      margin-right: 12px;
+      flex-shrink: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(16px, 1.3vw, 18.5px);
+      font-weight: 800;
+      color: #1d4ed8;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 12px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: clamp(22px, 2.15vw, 29px);
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-badge {
+      font-size: clamp(14.5px, 1.15vw, 16px);
+      font-weight: 800;
+      color: #0f766e;
+      background: #f0fdfa;
+      border: 1px solid #99f6e4;
+      padding: 6px 14px;
+      border-radius: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* 主体区域：严格顶部对齐，零纵向拉伸 */
+    .slide-body {
+      padding: 18px 28px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: stretch;
+      gap: 16px;
+      overflow: hidden;
+    }
+
+    /* 内联代码高亮胶囊 */
+    .code-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9em;
+      font-weight: 700;
+      color: #be123c;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      padding: 1px 6px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+
+    .code-pill.blue {
+      color: #0369a1;
+      background: #f0f9ff;
+      border-color: #bae6fd;
+    }
+
+    /* 四列对比表格容器 */
+    .table-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    table.diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    /* 列宽精密分配：架构维度 17% | C API 24% | C++ API 27% | 工程价值 32% */
+    .diff-table col.col-dim { width: 17%; }
+    .diff-table col.col-c { width: 24%; }
+    .diff-table col.col-cpp { width: 27%; }
+    .diff-table col.col-val { width: 32%; }
+
+    .diff-table thead th {
+      background: #f8fafc;
+      border-bottom: 1.5px solid #cbd5e1;
+      padding: 12px 16px;
+      text-align: left;
+      font-size: clamp(16px, 1.35vw, 18.5px);
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: 0.01em;
+    }
+
+    .diff-table thead th.th-c {
+      color: #b45309;
+      background: #fffbeb;
+    }
+
+    .diff-table thead th.th-cpp {
+      color: #0f766e;
+      background: #f0fdfa;
+    }
+
+    .diff-table thead th.th-val {
+      color: #1d4ed8;
+      background: #eff6ff;
+    }
+
+    .diff-table tbody tr {
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .diff-table tbody tr:last-child {
+      border-bottom: none;
+    }
+
+    .diff-table tbody tr:nth-child(even) {
+      background: #fafbfc;
+    }
+
+    .diff-table td {
+      padding: 13px 16px;
+      vertical-align: top;
+      font-size: clamp(15.5px, 1.32vw, 18px);
+      font-weight: 600;
+      color: #1e293b;
+      line-height: 1.48;
+      border-right: 1px solid #f1f5f9;
+      word-wrap: break-word;
+    }
+
+    .diff-table td:last-child {
+      border-right: none;
+    }
+
+    .diff-table td.dim-cell {
+      font-weight: 800;
+      color: #0f172a;
+      background: #f8fafc;
+      border-right: 1px solid #e2e8f0;
+    }
+
+    .dim-highlight {
+      color: #0284c7;
+    }
+
+    /* 底部核心执行模型总结栏 */
+    .summary-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 5px solid #0f766e;
+      border-radius: 12px;
+      padding: 14px 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: flex-start;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .pipeline-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .model-badge {
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #0f766e;
+      background: #f0fdfa;
+      border: 1px solid #99f6e4;
+      padding: 4px 12px;
+      border-radius: 7px;
+      flex-shrink: 0;
+    }
+
+    .flow-track {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 4px 14px;
+      border-radius: 8px;
+    }
+
+    .flow-node {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(16px, 1.38vw, 18.5px);
+      font-weight: 800;
+      color: #0369a1;
+    }
+
+    .flow-node.vec {
+      color: #0f766e;
+    }
+
+    .flow-arrow {
+      font-size: 16px;
+      font-weight: 800;
+      color: #64748b;
+    }
+
+    .summary-text {
+      font-size: clamp(15.5px, 1.36vw, 18.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="accent-bar"></span>
+        <span class="section-pill">1.4.2</span>
+        <h1 class="slide-title">C API 与 C++ API 的代码组织差异</h1>
+      </div>
+      <span class="header-badge">AscendC 架构演进对比</span>
+    </header>
+
+    <!-- 主体内容区（严格顶部对齐，零纵向拉伸） -->
+    <main class="slide-body">
+      <!-- 四列架构对比表 -->
+      <section class="table-card">
+        <table class="diff-table">
+          <colgroup>
+            <col class="col-dim">
+            <col class="col-c">
+            <col class="col-cpp">
+            <col class="col-val">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>架构维度</th>
+              <th class="th-c">C API</th>
+              <th class="th-cpp">C++ API</th>
+              <th class="th-val">工程价值</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="dim-cell"><span class="dim-highlight">GM</span> 地址、类型与范围</td>
+              <td>
+                <span class="code-pill">__gm__ float*</span> 配合手写指针偏移
+              </td>
+              <td>
+                <span class="code-pill blue">GlobalTensor&lt;float&gt;</span> 绑定地址、元素类型和当前 Block 长度
+              </td>
+              <td>
+                将分散在指针、偏移量和长度常量中的约束集中封装，消除类型不匹配与越界风险
+              </td>
+            </tr>
+            <tr>
+              <td class="dim-cell">长度参数的计量单位</td>
+              <td>
+                搬运写字节数 <span class="code-pill">BLOCK_LENGTH * sizeof(float)</span>；计算写元素数
+              </td>
+              <td>
+                <span class="code-pill blue">DataCopy</span>、<span class="code-pill blue">Add</span> 统一传入 <span class="code-pill blue">blockLength</span> 个元素
+              </td>
+              <td>
+                由 Tensor 类型自动推导元素宽度，无需手动换算 <span class="code-pill">sizeof(float)</span>，避免单位混用 Bug
+              </td>
+            </tr>
+            <tr>
+              <td class="dim-cell"><span class="dim-highlight">UB</span> 资源与流水线演进</td>
+              <td>
+                <span class="code-pill">__ubuf__</span> 静态数组直接占用 UB
+              </td>
+              <td>
+                <span class="code-pill blue">LocalMemAllocator</span> + <span class="code-pill blue">LocalTensor</span> 描述 UB 局部资源
+              </td>
+              <td>
+                集中管理 UB 生命周期；多 Tile / 多 Buffer 场景可平滑过渡至 <span class="code-pill blue">TPipe</span>、<span class="code-pill blue">TQue</span> 队列调度
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 底部核心执行模型总结条 -->
+      <footer class="summary-card">
+        <div class="pipeline-row">
+          <span class="model-badge">底层物理执行模型未变</span>
+          <div class="flow-track">
+            <span class="flow-node">GM</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-node">UB</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-node vec">Vector</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-node">UB</span>
+            <span class="flow-arrow">→</span>
+            <span class="flow-node">GM</span>
+          </div>
+        </div>
+        <p class="summary-text">
+          <span class="code-pill blue">GlobalTensor</span> 与 <span class="code-pill blue">LocalTensor</span> 绑定数据范围，<span class="code-pill blue">DataCopy</span> 负责搬运，<span class="code-pill blue">PipeBarrier</span> 负责 AI Core 内阶段依赖同步——C++ API 提升的是资源、单位与生命周期的表达力，而非替代硬件执行步骤。
+        </p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

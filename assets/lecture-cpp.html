@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.4 TensorOJ 实战：基于 C++ API 实现 Add 算子</title>
+  <style>
+    /* 全局样式重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .ppt-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 16px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+      padding: 18px 26px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部固定 54px 导航标头 */
+    .ppt-header {
+      height: 54px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(16px, 1.3vw, 18px);
+      font-weight: 800;
+      color: #1d4ed8;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 13px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: clamp(24px, 2.3vw, 32px);
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角极简翻页胶囊 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15px;
+      font-weight: 700;
+      color: #475569;
+      min-width: 46px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 主内容区：严格顶部对齐，绝不纵向拉伸 */
+    .slide-body {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 20px;
+      padding-top: 20px;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* 行内代码胶囊（学术玫红高亮） */
+    .code-chip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9em;
+      font-weight: 700;
+      color: #be123c;
+      background: #fff1f2;
+      border: 1px solid #fecdd3;
+      padding: 1px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    /* 双栏核心痛点 vs 解决方案网格 */
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+      align-items: start;
+    }
+
+    .panel-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 16px;
+    }
+
+    .panel-card.pain-card {
+      border-top: 4px solid #64748b;
+    }
+
+    .panel-card.cpp-card {
+      border-color: #bfdbfe;
+      border-top: 4px solid #1d4ed8;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .panel-title {
+      font-size: clamp(20px, 1.8vw, 25px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .cpp-card .panel-title {
+      color: #1e3a8a;
+    }
+
+    .panel-tag {
+      font-size: clamp(14px, 1.15vw, 16px);
+      font-weight: 800;
+      color: #475569;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 3px 12px;
+      border-radius: 7px;
+      flex-shrink: 0;
+    }
+
+    .cpp-card .panel-tag {
+      color: #1d4ed8;
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+
+    /* 卡片内部条目块 */
+    .item-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .sub-item {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 11px;
+      padding: 15px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .cpp-card .sub-item {
+      border-color: #dbeafe;
+    }
+
+    .sub-item-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: clamp(18.5px, 1.65vw, 22px);
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.35;
+    }
+
+    .item-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      font-size: 15px;
+      font-weight: 800;
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+      flex-shrink: 0;
+    }
+
+    .cpp-card .item-badge {
+      background: #eff6ff;
+      color: #1d4ed8;
+      border-color: #bfdbfe;
+    }
+
+    .sub-item-desc {
+      font-size: clamp(17px, 1.55vw, 21px);
+      font-weight: 600;
+      color: #334155;
+      line-height: 1.5;
+    }
+
+    /* 底部一句话核心本质总结栏 */
+    .essence-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 13px;
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+
+    .essence-label {
+      font-size: clamp(16px, 1.35vw, 18.5px);
+      font-weight: 800;
+      color: #1d4ed8;
+      background: #ffffff;
+      border: 1px solid #93c5fd;
+      padding: 4px 13px;
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+
+    .essence-text {
+      font-size: clamp(17.5px, 1.58vw, 21.5px);
+      font-weight: 700;
+      color: #1e3a8a;
+      line-height: 1.45;
+    }
+
+    .essence-text strong {
+      font-weight: 900;
+      color: #0f172a;
+    }
+  </style>
+</head>
+<body>
+  <div class="ppt-stage">
+    <!-- 顶部固定导航标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="section-pill">1.4</span>
+        <h1 class="slide-title">TensorOJ 实战：基于 C++ API 实现 Add 算子</h1>
+      </div>
+      <div class="nav-pill">
+        <button class="nav-btn" type="button" disabled title="上一页">&lt;</button>
+        <span class="page-indicator">1 / 1</span>
+        <button class="nav-btn" type="button" disabled title="下一页">&gt;</button>
+      </div>
+    </header>
+
+    <!-- 主体内容区（顶部紧凑对齐） -->
+    <main class="slide-body">
+      <!-- 双栏对比（C API 裸指针痛点 vs C++ API 强类型破局） -->
+      <div class="compare-grid">
+        <!-- 左栏：C API 裸指针痛点 -->
+        <section class="panel-card pain-card">
+          <div class="panel-head">
+            <h2 class="panel-title">C API 裸指针痛点</h2>
+            <span class="panel-tag">工程痛点</span>
+          </div>
+
+          <div class="item-stack">
+            <div class="sub-item">
+              <div class="sub-item-title">
+                <span class="item-badge">1</span>
+                <span>单位易混淆</span>
+              </div>
+              <p class="sub-item-desc">
+                DMA 用字节（<span class="code-chip">10752 * sizeof(float)</span>），计算用个数（<span class="code-chip">10752</span>），漏写不报错却越界。
+              </p>
+            </div>
+
+            <div class="sub-item">
+              <div class="sub-item-title">
+                <span class="item-badge">2</span>
+                <span>流水线难维护</span>
+              </div>
+              <p class="sub-item-desc">
+                <span class="code-chip">__ubuf__</span> 手工算偏移，多 Buffer 复用与切分极易出错。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 右栏：C++ API 强类型破局 -->
+        <section class="panel-card cpp-card">
+          <div class="panel-head">
+            <h2 class="panel-title">C++ API 强类型破局</h2>
+            <span class="panel-tag">架构演进</span>
+          </div>
+
+          <div class="item-stack">
+            <div class="sub-item">
+              <div class="sub-item-title">
+                <span class="item-badge">1</span>
+                <span>张量带类型长度</span>
+              </div>
+              <p class="sub-item-desc">
+                <span class="code-chip">GlobalTensor&lt;float&gt;</span> / <span class="code-chip">LocalTensor&lt;float&gt;</span> 自动约束数据类型与长度。
+              </p>
+            </div>
+
+            <div class="sub-item">
+              <div class="sub-item-title">
+                <span class="item-badge">2</span>
+                <span>结构化片上管理</span>
+              </div>
+              <p class="sub-item-desc">
+                <span class="code-chip">LocalMemAllocator</span> 统筹 UB，为升级 <span class="code-chip">TPipe</span> / <span class="code-chip">TQue</span> 队列流水线打底。
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 底部一句话核心结论条 -->
+      <footer class="essence-box">
+        <span class="essence-label">核心本质</span>
+        <p class="essence-text">
+          底层物理搬运规则不变，只是在硬件之上套一层<strong>强类型外衣</strong>，在<strong>编译期</strong>拦截低级错误。
+        </p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

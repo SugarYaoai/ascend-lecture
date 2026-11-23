@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>昇腾 NPU 与大规模并行计算 - 极简演讲课件</title>
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+            background-color: #ffffff;
+            color: #0f172a;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            user-select: none;
+        }
+
+        .stage-wrapper {
+            width: 100%;
+            max-width: 1160px;
+            height: 100vh;
+            margin: 0 auto;
+            padding: 16px 28px 18px 28px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+
+        /* 顶部固定高标头：高度严格锁死 60px，切换零晃动 */
+        .slide-header {
+            height: 60px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 12px;
+            margin-bottom: 14px;
+        }
+
+        .header-title-box {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .badge-chapter {
+            font-size: 15px;
+            font-weight: 900;
+            color: #1e293b;
+            background-color: #f1f5f9;
+            border: 1.5px solid #cbd5e1;
+            padding: 3px 10px;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }
+
+        .slide-main-title {
+            font-size: 24px;
+            font-weight: 900;
+            color: #0f172a;
+            letter-spacing: -0.02em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 翻页控制面板 */
+        .nav-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background-color: #f8fafc;
+            border: 1.5px solid #cbd5e1;
+            padding: 3px 8px;
+            border-radius: 10px;
+            flex-shrink: 0;
+        }
+
+        .nav-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            border: 1px solid #cbd5e1;
+            background-color: #ffffff;
+            color: #1e293b;
+            font-size: 16px;
+            font-weight: 900;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+        }
+
+        .nav-btn:hover:not(:disabled) {
+            background-color: #f1f5f9;
+            border-color: #94a3b8;
+        }
+
+        .nav-btn:active:not(:disabled) {
+            transform: scale(0.95);
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .page-counter {
+            font-size: 14px;
+            font-weight: 800;
+            color: #475569;
+            min-width: 50px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* 幻灯片显示切换系统 */
+        .slide-pane {
+            display: none;
+            width: 100%;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .slide-pane.active {
+            display: flex;
+        }
+
+        /* 网格卡片系统 */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+            width: 100%;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            width: 100%;
+        }
+
+        .grid-4 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            width: 100%;
+        }
+
+        .academic-card {
+            background-color: #fafbfc;
+            border: 2px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 22px 22px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            min-height: 250px;
+        }
+
+        .card-tag {
+            display: inline-block;
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #475569;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 2px 10px;
+            border-radius: 6px;
+        }
+
+        .card-heading {
+            font-size: 28px;
+            font-weight: 900;
+            color: #0f172a;
+            margin-top: 10px;
+            letter-spacing: -0.02em;
+        }
+
+        .card-divider {
+            border-top: 1.5px solid #e2e8f0;
+            padding-top: 14px;
+            margin-top: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .bullet-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 19px;
+            font-weight: 800;
+            color: #1e293b;
+        }
+
+        .bullet-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background-color: #334155;
+            flex-shrink: 0;
+        }
+
+        .text-danger {
+            color: #dc2626 !important;
+        }
+
+        .dot-danger {
+            background-color: #dc2626 !important;
+        }
+
+        /* 底部信息闭环条 */
+        .bottom-banner {
+            border: 2px solid #e2e8f0;
+            background-color: #f8fafc;
+            border-radius: 14px;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .pill-label {
+            font-size: 14px;
+            font-weight: 900;
+            padding: 4px 10px;
+            border-radius: 6px;
+            background-color: #e2e8f0;
+            color: #0f172a;
+        }
+
+        .banner-text {
+            font-size: 16.5px;
+            font-weight: 800;
+            color: #334155;
+        }
+
+        .flow-arrow {
+            font-size: 13px;
+            font-weight: 900;
+            color: #64748b;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            padding: 2px 10px;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* 核心定义横幅 */
+        .def-banner {
+            border: 2px solid #e2e8f0;
+            background-color: #f8fafc;
+            border-radius: 14px;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .def-pill {
+            font-size: 15px;
+            font-weight: 900;
+            background-color: #0f172a;
+            color: #ffffff;
+            padding: 3px 10px;
+            border-radius: 6px;
+            flex-shrink: 0;
+        }
+
+        .def-desc {
+            font-size: 17.5px;
+            font-weight: 800;
+            color: #1e293b;
+            line-height: 1.4;
+        }
+
+        /* ===================== 第 2 页拓扑图专用稳固样式 ===================== */
+        .topo-container {
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            width: 100%;
+            max-width: 980px;
+            margin: 4px auto 0 auto;
+            gap: 12px;
+            height: 318px;
+            box-sizing: border-box;
+        }
+
+        .host-box {
+            width: 190px;
+            height: 100%;
+            border: 2px solid #1e3a8a;
+            border-radius: 14px;
+            background-color: #ffffff;
+            padding: 12px 12px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            gap: 12px;
+            box-sizing: border-box;
+            flex-shrink: 0;
+        }
+
+        .host-title {
+            font-size: 22px;
+            font-weight: 900;
+            color: #1e3a8a;
+            letter-spacing: -0.01em;
+            line-height: 1.2;
+        }
+
+        .hm-card {
+            width: 100%;
+            flex: 1;
+            background-color: #eff6ff;
+            border: 2px solid #3b82f6;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-sizing: border-box;
+        }
+
+        .hm-title {
+            font-size: 18px;
+            font-weight: 900;
+            color: #1e3a8a;
+            text-align: center;
+            line-height: 1.3;
+        }
+
+        .hm-sub {
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #3b82f6;
+        }
+
+        .bridge-channel {
+            width: 80px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .bridge-label-top, .bridge-label-bottom {
+            font-size: 11.5px;
+            font-weight: 800;
+            color: #1e3a8a;
+            white-space: nowrap;
+        }
+
+        .device-box {
+            flex: 1 1 0;
+            min-width: 0;
+            height: 100%;
+            border: 2px solid #166534;
+            border-radius: 14px;
+            background-color: #ffffff;
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: center;
+            gap: 8px;
+            box-sizing: border-box;
+        }
+
+        .device-title {
+            font-size: 22px;
+            font-weight: 900;
+            color: #166534;
+            letter-spacing: -0.01em;
+            line-height: 1.2;
+        }
+
+        .gm-card {
+            width: 100%;
+            height: 60px;
+            flex-shrink: 0;
+            background-color: #f0fdf4;
+            border: 2px solid #22c55e;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            box-sizing: border-box;
+        }
+
+        .gm-title {
+            font-size: 17px;
+            font-weight: 900;
+            color: #166534;
+        }
+
+        .gm-sub {
+            font-size: 12px;
+            font-weight: 800;
+            color: #15803d;
+        }
+
+        .cores-row-wrap {
+            width: 100%;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .vertical-bus-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            height: 36px;
+            flex-shrink: 0;
+            padding: 0 8px;
+            box-sizing: border-box;
+        }
+
+        .vertical-bus-item {
+            flex: 1 1 0;
+            min-width: 0;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .vertical-bus-text {
+            font-size: 10.5px;
+            font-weight: 800;
+            color: #166534;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
+        .cores-grid {
+            display: flex;
+            align-items: stretch;
+            justify-content: space-between;
+            width: 100%;
+            flex: 1;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .core-card {
+            flex: 1 1 0;
+            min-width: 0;
+            height: 100%;
+            border: 2px solid #2563eb;
+            border-radius: 12px;
+            background-color: #ffffff;
+            padding: 8px 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            box-sizing: border-box;
+        }
+
+        .core-title {
+            font-size: 17px;
+            font-weight: 900;
+            color: #1d4ed8;
+        }
+
+        .ub-card {
+            width: 100%;
+            height: 58px;
+            border: 2px solid #f59e0b;
+            border-radius: 8px;
+            background-color: #fefce8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        .ub-title {
+            font-size: 13.5px;
+            font-weight: 900;
+            color: #b45309;
+            line-height: 1.25;
+        }
+
+        .compute-unit-wrap {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1px;
+        }
+
+        .compute-text {
+            font-size: 12.5px;
+            font-weight: 900;
+            color: #1e293b;
+        }
+
+        .ellipsis-box {
+            font-size: 26px;
+            font-weight: 900;
+            color: #0f172a;
+            padding: 0 4px;
+            flex-shrink: 0;
+        }
+
+        .legend-banner {
+            border: 2px solid #e2e8f0;
+            background-color: #f8fafc;
+            border-radius: 12px;
+            padding: 8px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 32px;
+            margin: 6px auto 0 auto;
+            max-width: 980px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13.5px;
+            font-weight: 800;
+            color: #1e293b;
+            white-space: nowrap;
+        }
+
+        /* ===================== 第 6 页算子规格专属样式 ===================== */
+        .formula-box {
+            border: 2px solid #e2e8f0;
+            background-color: #f8fafc;
+            border-radius: 14px;
+            padding: 14px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .formula-desc {
+            font-size: 18px;
+            font-weight: 700;
+            color: #334155;
+            line-height: 1.5;
+        }
+
+        .code-pill {
+            font-family: ui-monospace, Menlo, Monaco, Consolas, monospace;
+            font-size: 15px;
+            font-weight: 700;
+            color: #b91c1c;
+            background-color: #fef2f2;
+            border: 1px solid #fecaca;
+            padding: 1px 6px;
+            border-radius: 6px;
+        }
+
+        .formula-math {
+            text-align: center;
+            font-family: "Cambria Math", "Times New Roman", serif;
+            font-size: 26px;
+            font-weight: 700;
+            color: #0f172a;
+            padding: 4px 0;
+            letter-spacing: 0.04em;
+        }
+
+        .academic-table-wrap {
+            border: 2px solid #e2e8f0;
+            border-radius: 14px;
+            background-color: #ffffff;
+            overflow: hidden;
+        }
+
+        .academic-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        .academic-table th {
+            background-color: #f1f5f9;
+            color: #1e293b;
+            font-size: 16px;
+            font-weight: 900;
+            padding: 12px 20px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .academic-table td {
+            font-size: 16px;
+            font-weight: 700;
+            color: #334155;
+            padding: 11px 20px;
+            border-bottom: 1.5px solid #f1f5f9;
+        }
+
+        .academic-table tr:last-child td {
+            border-bottom: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="stage-wrapper">
+
+        <!-- 顶部固定高标头：高度严格锁死 60px，切换零晃动 -->
+        <header class="slide-header">
+            <div class="header-title-box">
+                <span id="pageBadge" class="badge-chapter">1.1.1</span>
+                <h1 id="pageTitle" class="slide-main-title">大模型时代下的 NPU 与大规模并行计算</h1>
+            </div>
+
+            <div class="nav-controls">
+                <button id="prevBtn" class="nav-btn" onclick="prevSlide()" title="上一页 (←)">&lt;</button>
+                <span id="pageCounter" class="page-counter">1 / 7</span>
+                <button id="nextBtn" class="nav-btn" onclick="nextSlide()" title="下一页 (→)">&gt;</button>
+            </div>
+        </header>
+
+        <!-- 第 1 页：1.1.1 计算范式与并行对比 -->
+        <div id="slide-1" class="slide-pane active">
+            <main class="grid-3">
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">计算范式剧变</span>
+                        <h2 class="card-heading">海量张量计算</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>规则极其固定</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>吞吐极其庞大</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">传统 CPU</span>
+                        <h2 class="card-heading">全能调度管家</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>擅长复杂控制</span>
+                        </div>
+                        <div class="bullet-item text-danger">
+                            <span class="bullet-dot dot-danger"></span>
+                            <span>缺乏并发吞吐</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">昇腾 NPU</span>
+                        <h2 class="card-heading">并行算力工厂</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>专为大模型打造</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>剥离图形专精张量</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <div class="bottom-banner">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span class="pill-label">CPU</span>
+                    <span class="banner-text">强逻辑判断 · 几颗强力大核 · 复杂调度</span>
+                </div>
+                <span style="font-size: 13px; font-weight: 900; color: #94a3b8; background: #ffffff; border: 1px solid #cbd5e1; padding: 2px 10px; border-radius: 20px;">VS</span>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span class="banner-text">专精张量并行 · 万级计算阵列 · 硬件脉动</span>
+                    <span class="pill-label" style="background-color: #0f172a; color: #ffffff;">NPU</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第 2 页：1.1.2.1 昇腾 NPU 硬件与存储拓扑图 -->
+        <div id="slide-2" class="slide-pane">
+            <div class="topo-container">
+                <div class="host-box">
+                    <h2 class="host-title">CPU / Host</h2>
+                    <div class="hm-card">
+                        <h3 class="hm-title">Host Memory<br>(HM)</h3>
+                        <p class="hm-sub">CPU侧内存</p>
+                    </div>
+                </div>
+
+                <div class="bridge-channel">
+                    <span class="bridge-label-top">输入/输出数据</span>
+                    <svg width="68" height="24" viewBox="0 0 68 24">
+                        <defs>
+                            <marker id="arrow-blue-l" markerWidth="6" markerHeight="6" refX="2" refY="3" orient="auto">
+                                <path d="M5,1 L1,3 L5,5 Z" fill="#1e3a8a" />
+                            </marker>
+                            <marker id="arrow-blue-r" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto">
+                                <path d="M1,1 L5,3 L1,5 Z" fill="#1e3a8a" />
+                            </marker>
+                        </defs>
+                        <line x1="8" y1="12" x2="60" y2="12" stroke="#1e3a8a" stroke-width="3" marker-start="url(#arrow-blue-l)" marker-end="url(#arrow-blue-r)" />
+                    </svg>
+                    <span class="bridge-label-bottom">数据搬运</span>
+                </div>
+
+                <div class="device-box">
+                    <h2 class="device-title">NPU Device</h2>
+                    <div class="gm-card">
+                        <h3 class="gm-title">Global Memory (GM)</h3>
+                        <p class="gm-sub">设备侧共享内存</p>
+                    </div>
+
+                    <div class="cores-row-wrap">
+                        <div class="vertical-bus-row">
+                            <div class="vertical-bus-item">
+                                <svg width="18" height="32" viewBox="0 0 18 32">
+                                    <defs>
+                                        <marker id="arrow-green-t" markerWidth="6" markerHeight="6" refX="3" refY="2" orient="auto">
+                                            <path d="M1,5 L3,1 L5,5 Z" fill="#15803d" />
+                                        </marker>
+                                        <marker id="arrow-green-b" markerWidth="6" markerHeight="6" refX="3" refY="4" orient="auto">
+                                            <path d="M1,1 L3,5 L5,1 Z" fill="#15803d" />
+                                        </marker>
+                                    </defs>
+                                    <line x1="9" y1="4" x2="9" y2="28" stroke="#15803d" stroke-width="2.5" marker-start="url(#arrow-green-t)" marker-end="url(#arrow-green-b)" />
+                                </svg>
+                                <span class="vertical-bus-text">数据搬运<br>(读/写)</span>
+                            </div>
+
+                            <div class="vertical-bus-item">
+                                <svg width="18" height="32" viewBox="0 0 18 32">
+                                    <line x1="9" y1="4" x2="9" y2="28" stroke="#15803d" stroke-width="2.5" marker-start="url(#arrow-green-t)" marker-end="url(#arrow-green-b)" />
+                                </svg>
+                                <span class="vertical-bus-text">数据搬运<br>(读/写)</span>
+                            </div>
+
+                            <div style="width: 32px;"></div>
+
+                            <div class="vertical-bus-item">
+                                <svg width="18" height="32" viewBox="0 0 18 32">
+                                    <line x1="9" y1="4" x2="9" y2="28" stroke="#15803d" stroke-width="2.5" marker-start="url(#arrow-green-t)" marker-end="url(#arrow-green-b)" />
+                                </svg>
+                                <span class="vertical-bus-text">数据搬运<br>(读/写)</span>
+                            </div>
+                        </div>
+
+                        <div class="cores-grid">
+                            <div class="core-card">
+                                <h4 class="core-title">AI Core</h4>
+                                <div class="ub-card">
+                                    <h5 class="ub-title">Unified Buffer<br>(UB)</h5>
+                                </div>
+                                <div class="compute-unit-wrap">
+                                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">
+                                        <rect x="4" y="4" width="16" height="16" rx="2"/>
+                                        <rect x="9" y="9" width="6" height="6"/>
+                                        <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+                                    </svg>
+                                    <span class="compute-text">计算</span>
+                                </div>
+                            </div>
+
+                            <div class="core-card">
+                                <h4 class="core-title">AI Core</h4>
+                                <div class="ub-card">
+                                    <h5 class="ub-title">Unified Buffer<br>(UB)</h5>
+                                </div>
+                                <div class="compute-unit-wrap">
+                                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">
+                                        <rect x="4" y="4" width="16" height="16" rx="2"/>
+                                        <rect x="9" y="9" width="6" height="6"/>
+                                        <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+                                    </svg>
+                                    <span class="compute-text">计算</span>
+                                </div>
+                            </div>
+
+                            <div class="ellipsis-box">...</div>
+
+                            <div class="core-card">
+                                <h4 class="core-title">AI Core</h4>
+                                <div class="ub-card">
+                                    <h5 class="ub-title">Unified Buffer<br>(UB)</h5>
+                                </div>
+                                <div class="compute-unit-wrap">
+                                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2">
+                                        <rect x="4" y="4" width="16" height="16" rx="2"/>
+                                        <rect x="9" y="9" width="6" height="6"/>
+                                        <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+                                    </svg>
+                                    <span class="compute-text">计算</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="legend-banner">
+                <div class="legend-item">
+                    <svg width="36" height="14" viewBox="0 0 36 14">
+                        <line x1="4" y1="7" x2="32" y2="7" stroke="#1e3a8a" stroke-width="2.5" marker-start="url(#arrow-blue-l)" marker-end="url(#arrow-blue-r)" />
+                    </svg>
+                    <span>Host 与设备之间的数据传输</span>
+                </div>
+                <div class="legend-item">
+                    <svg width="36" height="14" viewBox="0 0 36 14">
+                        <defs>
+                            <marker id="arrow-green-horiz-l" markerWidth="6" markerHeight="6" refX="2" refY="3" orient="auto">
+                                <path d="M5,1 L1,3 L5,5 Z" fill="#15803d" />
+                            </marker>
+                            <marker id="arrow-green-horiz-r" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto">
+                                <path d="M1,1 L5,3 L1,5 Z" fill="#15803d" />
+                            </marker>
+                        </defs>
+                        <line x1="4" y1="7" x2="32" y2="7" stroke="#15803d" stroke-width="2.5" marker-start="url(#arrow-green-horiz-l)" marker-end="url(#arrow-green-horiz-r)" />
+                    </svg>
+                    <span>设备内部：GM 与 UB 之间的数据搬运（读/写）</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第 3 页：1.1.2.2 存储层级划分 -->
+        <div id="slide-3" class="slide-pane">
+            <main class="grid-3">
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">Host 侧</span>
+                        <h2 class="card-heading">Host Memory</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>存放原始数据</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>CPU 侧系统内存</span>
+                        </div>
+                        <div class="bullet-item text-danger">
+                            <span class="bullet-dot dot-danger"></span>
+                            <span>NPU 无法直读</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">Device 侧</span>
+                        <h2 class="card-heading">Global Memory</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>板载高速 HBM</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>数十 GB 大容量</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>全 AI Core 共享</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">AI Core 内部</span>
+                        <h2 class="card-heading">Unified Buffer</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>片上极速 SRAM</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>容量仅数百 KB</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>算力唯一工作区</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <div class="bottom-banner">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="pill-label">HM</span>
+                    <span class="banner-text">系统内存 · 原始输入</span>
+                </div>
+                <div class="flow-arrow">PCIe 搬运 <span>→</span></div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="pill-label">GM</span>
+                    <span class="banner-text">板载显存 · 多核共享</span>
+                </div>
+                <div class="flow-arrow">流水搬入 <span>→</span></div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="banner-text">片上缓存 · 算力直读</span>
+                    <span class="pill-label" style="background-color: #0f172a; color: #ffffff;">UB</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第 4 页：1.1.2.3 AI Core 底层硬件构成 -->
+        <div id="slide-4" class="slide-pane">
+            <div class="def-banner">
+                <span class="def-pill">AI Core</span>
+                <p class="def-desc">
+                    昇腾 NPU 最核心的独立物理计算单元，集成独立算力引擎、内存搬运单元与片上高速存储
+                </p>
+            </div>
+
+            <main class="grid-4">
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">算力引擎</span>
+                        <h2 class="card-heading" style="font-size: 24px;">Cube 矩阵引擎</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>专精高密 MatMul</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>硬件级卷积吞吐</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">算力引擎</span>
+                        <h2 class="card-heading" style="font-size: 24px;">Vector 向量引擎</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>SIMD 连续并发</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>精于标量与向量</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">片上存储</span>
+                        <h2 class="card-heading" style="font-size: 24px;">UB 高速缓存</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>片上极速 SRAM</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>算力唯一工作区</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">数据搬运</span>
+                        <h2 class="card-heading" style="font-size: 24px;">MTE 搬运引擎</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>独立 DMA 通道</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>GM 与 UB 传输</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- 第 5 页：1.2 实现第一个 Add 算子 -->
+        <div id="slide-5" class="slide-pane">
+            <main class="grid-2">
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">Host 程序（CPU 侧）</span>
+                        <h2 class="card-heading">全局调度指挥官</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>在设备侧开辟显存空间</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>通过 PCIe 将数据送入 NPU</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>发号施令启动底层计算</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card">
+                    <div>
+                        <span class="card-tag">Kernel 核函数（NPU 侧）</span>
+                        <h2 class="card-heading">一线计算工人</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>AI Core 内部执行的底层 C/C++</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>启动时派生多个并发 Block 任务</span>
+                        </div>
+                        <div class="bullet-item">
+                            <span class="bullet-dot"></span>
+                            <span>多核并发各自处理一份数据切片</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <div class="bottom-banner">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="pill-label">Host 编排</span>
+                    <span class="banner-text">CPU 调度与内存准备</span>
+                </div>
+                <div class="flow-arrow">驱动下发 <span>→</span></div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="pill-label">Kernel 启动</span>
+                    <span class="banner-text">派生并发 Block 任务</span>
+                </div>
+                <div class="flow-arrow">硬件脉动 <span>→</span></div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="banner-text">多核并发切片执行</span>
+                    <span class="pill-label" style="background-color: #0f172a; color: #ffffff;">AI Core</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第 6 页：1.2.1 Add 算子功能介绍 -->
+        <div id="slide-6" class="slide-pane">
+            <div class="formula-box">
+                <p class="formula-desc">
+                    输入为两个形状相同的一维 <span class="code-pill">float32</span> 向量 <span class="code-pill">x</span>、<span class="code-pill">y</span>，输出为向量 <span class="code-pill">z</span>。计算逻辑为逐元素相加：
+                </p>
+                <div class="formula-math">
+                    z<sub>i</sub> = x<sub>i</sub> + y<sub>i</sub>, &emsp; i &in; [0, 172032)
+                </div>
+            </div>
+
+            <div class="academic-table-wrap">
+                <table class="academic-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 25%;">变量</th>
+                            <th>说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>输入 <span class="code-pill">x</span></td>
+                            <td>一维 <span class="code-pill">float32</span> 向量，形状为 <span class="code-pill">(172032,)</span></td>
+                        </tr>
+                        <tr>
+                            <td>输入 <span class="code-pill">y</span></td>
+                            <td>一维 <span class="code-pill">float32</span> 向量，形状为 <span class="code-pill">(172032,)</span></td>
+                        </tr>
+                        <tr>
+                            <td>输出 <span class="code-pill">z</span></td>
+                            <td>一维 <span class="code-pill">float32</span> 向量，形状为 <span class="code-pill">(172032,)</span></td>
+                        </tr>
+                        <tr>
+                            <td><span class="code-pill">x</span>、<span class="code-pill">y</span> 取值范围</td>
+                            <td><span class="code-pill">[-1.0, 1.0]</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 第 7 页：1.2.2.1 手算切片参数与 UB 容量预算 -->
+        <div id="slide-7" class="slide-pane">
+            <div class="def-banner" style="justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span class="def-pill">切片规格</span>
+                    <span class="def-desc">输入长度固定为 172032 个 float32 元素，均匀切分为 16 个 Block 独立并发调度</span>
+                </div>
+                <span style="font-size: 15px; font-weight: 900; color: #1e3a8a; background: #eff6ff; border: 1px solid #bfdbfe; padding: 4px 12px; border-radius: 8px;">总显存：672 KB</span>
+            </div>
+
+            <main class="grid-2">
+                <div class="academic-card" style="min-height: 290px;">
+                    <div>
+                        <span class="card-tag">单核划分</span>
+                        <h2 class="card-heading" style="font-size: 26px;">16 核多任务分工</h2>
+                    </div>
+                    <div class="card-divider">
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>每 Block 恰好处理 10752 个元素</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>单切片长度：10752 × 4 B = 43008 B</span>
+                        </div>
+                        <div class="bullet-item" style="font-size: 18px;">
+                            <span class="bullet-dot"></span>
+                            <span>满足 32 B 对齐：43008 B = 1344 × 32 B</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="academic-card" style="min-height: 290px; background-color: #0f172a; border-color: #1e293b; color: #f8fafc;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 13px; font-weight: 800; color: #94a3b8; background: #1e293b; padding: 2px 8px; border-radius: 6px;">流程图示</span>
+                        <span style="font-size: 13px; font-weight: 700; color: #38bdf8;">float32 张量均匀切片</span>
+                    </div>
+                    <div style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; line-height: 1.6; margin-top: 10px; color: #cbd5e1;">
+                        <div style="color: #94a3b8; margin-bottom: 6px;">完整向量: 172032 个元素 (672 KB)</div>
+                        <div>├── <span style="color: #fbbf24; font-weight: bold;">Block 0</span>  : 元素 [0, 10752) &nbsp;&nbsp;&nbsp;&nbsp;→ 1344 × 32 B</div>
+                        <div>├── <span style="color: #fbbf24; font-weight: bold;">Block 1</span>  : 元素 [10752, 21504) → 1344 × 32 B</div>
+                        <div style="color: #64748b;">│   ...</div>
+                        <div>└── <span style="color: #fbbf24; font-weight: bold;">Block 15</span> : 元素 [161280, 172032) → 1344 × 32 B</div>
+                    </div>
+                    <div style="border-top: 1px solid #334155; padding-top: 10px; margin-top: 10px; font-size: 13px; color: #94a3b8;">
+                        硬件级零对齐开销 · 多核负载极致均衡
+                    </div>
+                </div>
+            </main>
+        </div>
+
+    </div>
+
+    <!-- 交互切换逻辑 -->
+    <script>
+        const slides = [
+            { badge: "1.1.1", title: "大模型时代下的 NPU 与大规模并行计算" },
+            { badge: "1.1.2", title: "昇腾 NPU 硬件与存储拓扑图" },
+            { badge: "1.1.2.1", title: "存储层级划分：Host Memory 与 Global Memory" },
+            { badge: "1.1.2.2", title: "AI Core 物理计算核心与底层硬件构成" },
+            { badge: "1.2", title: "实现第一个 Add 算子：异构任务切分与协同" },
+            { badge: "1.2.1", title: "Add 算子功能介绍与张量规格" },
+            { badge: "1.2.2.1", title: "手算切片参数与多核 Block 划分" }
+        ];
+
+        let currentSlide = 0;
+        window.setLecturePage = (n) => { currentSlide = Math.max(0, Math.min(slides.length - 1,n)); updateSlide(); };
+        const totalSlides = slides.length;
+
+        function updateSlide() {
+            document.getElementById("pageBadge").innerText = slides[currentSlide].badge;
+            document.getElementById("pageTitle").innerText = slides[currentSlide].title;
+            document.getElementById("pageCounter").innerText = `${currentSlide + 1} / ${totalSlides}`;
+
+            document.getElementById("prevBtn").disabled = (currentSlide === 0);
+            document.getElementById("nextBtn").disabled = (currentSlide === totalSlides - 1);
+
+            for (let i = 0; i < totalSlides; i++) {
+                const pane = document.getElementById(`slide-${i + 1}`);
+                if (pane) {
+                    if (i === currentSlide) {
+                        pane.classList.add("active");
+                    } else {
+                        pane.classList.remove("active");
+                    }
+                }
+            }
+        }
+
+        function prevSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        window.addEventListener("keydown", function(e) {
+            if (e.key === "ArrowLeft" || e.key === "PageUp") {
+                prevSlide();
+            } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+                nextSlide();
+            }
+        });
+
+        updateSlide();
+    </script>
+</body>
+</html>

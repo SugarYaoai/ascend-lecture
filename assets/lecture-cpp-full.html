@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>1.4.3 完整交付代码解析：kernel.asc</title>
+  <style>
+    /* 全局重置与单屏居中画布 */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #eef2f6;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0f172a;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 标准 16:9 宽屏 PPT 舞台 */
+    .slide-stage {
+      width: min(96vw, 1344px, calc(94vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #ffffff;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 顶部固定 62px 导航标头（切换零抖动） */
+    .ppt-header {
+      height: 62px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 0 26px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      background: #ffffff;
+      user-select: none;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .section-pill {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: clamp(15px, 1.25vw, 17.5px);
+      font-weight: 800;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      padding: 4px 12px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slide-title {
+      font-size: clamp(20px, 2.05vw, 27px);
+      font-weight: 800;
+      color: #0f172a;
+      margin-left: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右上角翻页控件 */
+    .nav-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      padding: 4px 8px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .nav-btn {
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 7px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 14.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .nav-btn:hover:not(:disabled) {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+    }
+
+    .nav-btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+
+    .page-indicator {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: #334155;
+      min-width: 48px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 幻灯片页面（严格顶部对齐，零纵向拉伸） */
+    .slide {
+      display: none;
+    }
+
+    .slide.active {
+      flex: 1;
+      padding: 14px 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      justify-content: flex-start;
+      overflow: hidden;
+    }
+
+    /* 行内代码胶囊 */
+    .inline-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+      font-weight: 700;
+      color: #0f172a;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 1px 6px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    /* 顶部导语横幅 */
+    .summary-strip {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #0284c7;
+      border-radius: 11px;
+      padding: 9px 16px;
+      font-size: clamp(15px, 1.32vw, 18px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.42;
+      flex-shrink: 0;
+    }
+
+    /* 双栏布局网格（严格 align-items: start 防止纵向拉伸） */
+    .grid-1-1 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .grid-122-078 {
+      display: grid;
+      grid-template-columns: 1.22fr 0.78fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .col-stack {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    /* 代码卡片（浅冷灰头 + 纯白代码区，单行零溢出） */
+    .code-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #0f766e;
+      border-radius: 13px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      min-width: 0;
+    }
+
+    .code-card.host {
+      border-top-color: #1d4ed8;
+    }
+
+    .card-header {
+      padding: 8px 13px 8px 15px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
+      user-select: none;
+    }
+
+    .tag-pill {
+      font-size: clamp(14.5px, 1.2vw, 16.5px);
+      font-weight: 800;
+      color: #0f766e;
+      letter-spacing: 0.01em;
+    }
+
+    .code-card.host .tag-pill {
+      color: #1e3a8a;
+    }
+
+    /* 一键复制按钮 */
+    .copy-btn {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      color: #334155;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      padding: 3px 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .copy-btn:hover {
+      background: #f1f5f9;
+      border-color: #94a3b8;
+      color: #0f172a;
+    }
+
+    .copy-btn.copied {
+      background: #ecfdf5;
+      border-color: #6ee7b7;
+      color: #047857;
+    }
+
+    /* 纯白高对比代码展示区（精密计算字号，零水平截断） */
+    .code-box {
+      background: #ffffff;
+      padding: 10px 13px;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .code-box pre {
+      margin: 0;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #0f172a;
+      font-weight: 600;
+      user-select: text;
+    }
+
+    /* Slide 1 最长行 77 字符：精密字号确保双栏内完整单行不裁切 */
+    .grid-1-1 .code-box pre {
+      font-size: clamp(12.2px, 1.02vw, 13.8px);
+      line-height: 1.38;
+    }
+
+    /* Slide 2 最长行 72 字符：大字号高可读单行显示 */
+    .grid-122-078 .code-box {
+      padding: 13px 15px;
+    }
+
+    .grid-122-078 .code-box pre {
+      font-size: clamp(13.8px, 1.18vw, 15.8px);
+      line-height: 1.48;
+    }
+
+    .code-box pre code {
+      font-family: inherit;
+      white-space: pre;
+    }
+
+    /* 学术浅底语法高亮 */
+    .prep { color: #b45309; font-weight: 700; }
+    .str { color: #047857; font-weight: 700; }
+    .kw { color: #1e3a8a; font-weight: 800; }
+    .ty { color: #0f766e; font-weight: 700; }
+    .ns { color: #4338ca; font-weight: 700; }
+    .fn { color: #1d4ed8; font-weight: 800; }
+    .num { color: #b45309; font-weight: 700; }
+
+    /* 第 1 页底部要点条 */
+    .bottom-note {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #0f766e;
+      border-radius: 11px;
+      padding: 9px 16px;
+      font-size: clamp(14.5px, 1.26vw, 17.2px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.42;
+      flex-shrink: 0;
+    }
+
+    /* 第 2 页右侧精简要点卡片 */
+    .note-card {
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-top: 3px solid #0284c7;
+      border-radius: 13px;
+      padding: 15px 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 11px;
+    }
+
+    .note-card.checklist {
+      border-top-color: #0f766e;
+    }
+
+    .note-title {
+      font-size: clamp(16.5px, 1.4vw, 19px);
+      font-weight: 800;
+      color: #0369a1;
+      line-height: 1.35;
+    }
+
+    .note-card.checklist .note-title {
+      color: #0f766e;
+    }
+
+    .note-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .note-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      font-size: clamp(15px, 1.28vw, 17.5px);
+      font-weight: 700;
+      color: #1e293b;
+      line-height: 1.46;
+    }
+
+    .note-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #0284c7;
+      margin-top: 9px;
+      flex-shrink: 0;
+    }
+
+    .note-card.checklist .note-dot {
+      background: #0f766e;
+    }
+  </style>
+</head>
+<body>
+  <div class="slide-stage">
+    <!-- 顶部固定 62px 导航标头 -->
+    <header class="ppt-header">
+      <div class="header-left">
+        <span class="section-pill">1.4.3 完整交付代码解析：kernel.asc</span>
+        <h1 id="slideTitle" class="slide-title">头文件、切片参数与 Device 侧 add_custom</h1>
+      </div>
+      <div class="nav-pill">
+        <button id="prevBtn" class="nav-btn" type="button" title="上一页 (←)">上一页</button>
+        <span id="pageIndicator" class="page-indicator">1 / 2</span>
+        <button id="nextBtn" class="nav-btn" type="button" title="下一页 (→)">下一页</button>
+      </div>
+    </header>
+
+    <!-- 第 1 页：头文件、切片参数与 Device 侧 add_custom -->
+    <section id="slide-1" class="slide active">
+      <div class="summary-strip">
+        <span class="inline-code">run_kernel</span> 沿用第三节题目接口，校验输入规格后通过 <span class="inline-code">add_custom&lt;BLOCK_LENGTH&gt;&lt;&lt;&lt;NUM_BLOCKS, nullptr, stream&gt;&gt;&gt;(x, y, z)</span> 实例化模板 Kernel 并挂载至 <span class="inline-code">Stream</span>。
+      </div>
+
+      <div class="grid-1-1">
+        <!-- 左栏：头文件、切片常量、模板签名与 GM 视图绑定 -->
+        <article class="code-card">
+          <div class="card-header">
+            <span class="tag-pill">① 头文件、切片参数与 GM 视图绑定</span>
+            <button class="copy-btn" type="button" data-target="code-s1-left">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-s1-left"><span class="prep">#include</span> <span class="str">&lt;cstdint&gt;</span>
+<span class="prep">#include</span> <span class="str">"kernel_operator.h"</span>
+
+<span class="kw">constexpr</span> <span class="ty">uint32_t</span> NUM_BLOCKS = <span class="num">16</span>;
+<span class="kw">constexpr</span> <span class="ty">uint32_t</span> BLOCK_LENGTH = <span class="num">10752</span>;
+<span class="kw">constexpr</span> <span class="ty">int64_t</span> TOTAL_LENGTH = NUM_BLOCKS * BLOCK_LENGTH;
+
+<span class="kw">template</span> &lt;<span class="ty">uint32_t</span> blockLength&gt;
+<span class="kw">__vector__</span> <span class="kw">__global__</span> <span class="ty">void</span> <span class="fn">add_custom</span>(<span class="ty">GM_ADDR</span> x, <span class="ty">GM_ADDR</span> y, <span class="ty">GM_ADDR</span> z)
+{
+    <span class="ns">AscendC</span>::<span class="fn">InitSocState</span>();
+
+    <span class="ns">AscendC</span>::<span class="ty">GlobalTensor</span>&lt;<span class="ty">float</span>&gt; xGm;
+    <span class="ns">AscendC</span>::<span class="ty">GlobalTensor</span>&lt;<span class="ty">float</span>&gt; yGm;
+    <span class="ns">AscendC</span>::<span class="ty">GlobalTensor</span>&lt;<span class="ty">float</span>&gt; zGm;
+
+    <span class="kw">const</span> <span class="ty">uint32_t</span> offset = block_idx * blockLength;
+    xGm.<span class="fn">SetGlobalBuffer</span>(<span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(x) + offset, blockLength);
+    yGm.<span class="fn">SetGlobalBuffer</span>(<span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(y) + offset, blockLength);
+    zGm.<span class="fn">SetGlobalBuffer</span>(<span class="kw">reinterpret_cast</span>&lt;<span class="kw">__gm__</span> <span class="ty">float</span>*&gt;(z) + offset, blockLength);</code></pre>
+          </div>
+        </article>
+
+        <!-- 右栏：UB 结构化分配与三阶段强类型流水 -->
+        <article class="code-card">
+          <div class="card-header">
+            <span class="tag-pill">② UB 结构化分配与三阶段强类型流水</span>
+            <button class="copy-btn" type="button" data-target="code-s1-right">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-s1-right">    <span class="ns">AscendC</span>::<span class="ty">LocalMemAllocator</span>&lt;<span class="ns">AscendC</span>::<span class="ns">Hardware</span>::UB&gt; ubAllocator;
+    <span class="ns">AscendC</span>::<span class="ty">LocalTensor</span>&lt;<span class="ty">float</span>&gt; xLocal = ubAllocator.<span class="fn">Alloc</span>&lt;<span class="ty">float</span>, blockLength&gt;();
+    <span class="ns">AscendC</span>::<span class="ty">LocalTensor</span>&lt;<span class="ty">float</span>&gt; yLocal = ubAllocator.<span class="fn">Alloc</span>&lt;<span class="ty">float</span>, blockLength&gt;();
+    <span class="ns">AscendC</span>::<span class="ty">LocalTensor</span>&lt;<span class="ty">float</span>&gt; zLocal = ubAllocator.<span class="fn">Alloc</span>&lt;<span class="ty">float</span>, blockLength&gt;();
+
+    <span class="ns">AscendC</span>::<span class="fn">DataCopy</span>(xLocal, xGm, blockLength);
+    <span class="ns">AscendC</span>::<span class="fn">DataCopy</span>(yLocal, yGm, blockLength);
+    <span class="ns">AscendC</span>::<span class="fn">PipeBarrier</span>&lt;PIPE_ALL&gt;();
+
+    <span class="ns">AscendC</span>::<span class="fn">Add</span>(zLocal, xLocal, yLocal, blockLength);
+    <span class="ns">AscendC</span>::<span class="fn">PipeBarrier</span>&lt;PIPE_ALL&gt;();
+
+    <span class="ns">AscendC</span>::<span class="fn">DataCopy</span>(zGm, zLocal, blockLength);
+    <span class="ns">AscendC</span>::<span class="fn">PipeBarrier</span>&lt;PIPE_ALL&gt;();
+}</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <!-- 底部核心演进要点条 -->
+      <div class="bottom-note">
+        C++ API 核心切换：使用 <span class="inline-code">AscendC::InitSocState()</span> 初始化硬件状态；<span class="inline-code">DataCopy</span> 与 <span class="inline-code">Add</span> 统一按元素个数传入 <span class="inline-code">blockLength</span>，并由 <span class="inline-code">PipeBarrier&lt;PIPE_ALL&gt;()</span> 保证核内阶段同步。
+      </div>
+    </section>
+
+    <!-- 第 2 页：Host 侧 Launch 入口：run_kernel -->
+    <section id="slide-2" class="slide">
+      <div class="grid-122-078">
+        <!-- 左栏：Host 侧完整 run_kernel 代码 -->
+        <article class="code-card host">
+          <div class="card-header">
+            <span class="tag-pill">③ Host 侧 Launch 入口：run_kernel 完整实现</span>
+            <button class="copy-btn" type="button" data-target="code-s2-left">复制</button>
+          </div>
+          <div class="code-box">
+            <pre><code id="code-s2-left"><span class="kw">extern</span> <span class="str">"C"</span> <span class="ty">void</span> <span class="fn">run_kernel</span>(<span class="ty">GM_ADDR</span> x, <span class="kw">const</span> <span class="ty">TensorGroupInfo</span>&amp; info_x,
+                           <span class="ty">GM_ADDR</span> y, <span class="kw">const</span> <span class="ty">TensorGroupInfo</span>&amp; info_y,
+                           <span class="ty">GM_ADDR</span> z, <span class="kw">const</span> <span class="ty">TensorGroupInfo</span>&amp; info_z,
+                           <span class="ty">int64_t</span> availableCoreNum, <span class="ty">aclrtStream</span> stream)
+{
+    <span class="kw">if</span> (info_x.numTensors != <span class="num">1</span> || info_y.numTensors != <span class="num">1</span> ||
+        info_z.numTensors != <span class="num">1</span> || info_x.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> ||
+        info_y.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> || info_z.tensors[<span class="num">0</span>].dtype != <span class="num">0</span> ||
+        info_x.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        info_y.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        info_z.tensors[<span class="num">0</span>].shape[<span class="num">0</span>] != TOTAL_LENGTH ||
+        availableCoreNum &lt;= <span class="num">0</span>) {
+        <span class="kw">return</span>;
+    }
+
+    <span class="fn">add_custom</span>&lt;BLOCK_LENGTH&gt;<span class="kw">&lt;&lt;&lt;</span>NUM_BLOCKS, <span class="kw">nullptr</span>, stream<span class="kw">&gt;&gt;&gt;</span>(x, y, z);
+}</code></pre>
+          </div>
+        </article>
+
+        <!-- 右栏：两张顶部对齐结构化解读卡 -->
+        <div class="col-stack">
+          <div class="note-card">
+            <h2 class="note-title">模板实例化调用语法：<span class="inline-code">add_custom&lt;BLOCK_LENGTH&gt;&lt;&lt;&lt;...&gt;&gt;&gt;</span></h2>
+            <ul class="note-list">
+              <li>
+                <span class="note-dot"></span>
+                <span><strong>编译期模板实参 <span class="inline-code">&lt;BLOCK_LENGTH&gt;</span></strong>：将分块长度 <span class="inline-code">10752</span> 传入核函数模板，供内部 <span class="inline-code">ubAllocator.Alloc</span> 在编译期规划片上空间</span>
+              </li>
+              <li>
+                <span class="note-dot"></span>
+                <span><strong>运行时执行配置 <span class="inline-code">&lt;&lt;&lt;NUM_BLOCKS, nullptr, stream&gt;&gt;&gt;</span></strong>：启动 <span class="inline-code">16</span> 个逻辑 Block，无额外动态 UB，异步下发至目标 <span class="inline-code">stream</span></span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="note-card checklist">
+            <h2 class="note-title">C++ API 交付核查清单</h2>
+            <ul class="note-list">
+              <li>
+                <span class="note-dot"></span>
+                <span><strong>头文件精简</strong>：仅需包含 <span class="inline-code">"kernel_operator.h"</span>，移除底层 <span class="inline-code">"c_api/asc_simd.h"</span></span>
+              </li>
+              <li>
+                <span class="note-dot"></span>
+                <span><strong>核内环境初始化</strong>：入口使用 <span class="inline-code">AscendC::InitSocState()</span> 替代 <span class="inline-code">asc_init()</span></span>
+              </li>
+              <li>
+                <span class="note-dot"></span>
+                <span><strong>全流水线屏障</strong>：搬入、计算、写回后均使用 <span class="inline-code">AscendC::PipeBarrier&lt;PIPE_ALL&gt;()</span> 确保核内读写依赖</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const titles = [
+        "头文件、切片参数与 Device 侧 add_custom",
+        "Host 侧 Launch 入口：run_kernel"
+      ];
+
+      let currentIndex = 0;
+      window.setLecturePage = i => { currentIndex=i; renderSlide(); };
+      const totalSlides = titles.length;
+
+      const titleEl = document.getElementById("slideTitle");
+      const indicatorEl = document.getElementById("pageIndicator");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const slideEls = [
+        document.getElementById("slide-1"),
+        document.getElementById("slide-2")
+      ];
+
+      function renderSlide() {
+        titleEl.textContent = titles[currentIndex];
+        indicatorEl.textContent = (currentIndex + 1) + " / " + totalSlides;
+        prevBtn.disabled = currentIndex === 0;
+        nextBtn.disabled = currentIndex === totalSlides - 1;
+
+        slideEls.forEach(function (el, idx) {
+          if (idx === currentIndex) {
+            el.classList.add("active");
+          } else {
+            el.classList.remove("active");
+          }
+        });
+      }
+
+      function goPrev() {
+        if (currentIndex > 0) {
+          currentIndex--;
+          renderSlide();
+        }
+      }
+
+      function goNext() {
+        if (currentIndex < totalSlides - 1) {
+          currentIndex++;
+          renderSlide();
+        }
+      }
+
+      prevBtn.addEventListener("click", goPrev);
+      nextBtn.addEventListener("click", goNext);
+
+      window.addEventListener("keydown", function (e) {
+        if (e.key === "ArrowLeft" || e.key === "PageUp") {
+          e.preventDefault();
+          goPrev();
+        } else if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+          e.preventDefault();
+          goNext();
+        }
+      });
+
+      /* 一键复制代码块内容（使用兼容 iFrame 的 execCommand 回退方案） */
+      function copyTextToClipboard(text) {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        let ok = false;
+        try {
+          ok = document.execCommand("copy");
+        } catch (err) {
+          ok = false;
+        }
+        document.body.removeChild(textarea);
+        return ok;
+      }
+
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          const targetId = btn.getAttribute("data-target");
+          const codeEl = document.getElementById(targetId);
+          if (!codeEl) return;
+
+          const rawText = codeEl.textContent;
+          if (copyTextToClipboard(rawText)) {
+            btn.textContent = "已复制";
+            btn.classList.add("copied");
+            setTimeout(function () {
+              btn.textContent = "复制";
+              btn.classList.remove("copied");
+            }, 1600);
+          }
+        });
+      });
+
+      renderSlide();
+    })();
+  </script>
+</body>
+</html>
