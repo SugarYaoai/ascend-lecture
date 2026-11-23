@@ -21,7 +21,7 @@ main{padding:30px;min-width:0}h1{font-size:24px;margin:0 0 18px}video{display:bl
 <body>
 <header><a href="index.html">动手学昇腾算子开发</a><strong>视频课程</strong><a href="index.html">返回讲义</a></header>
 <div class="layout">
-<nav aria-label="视频目录"><h2>视频目录</h2><h3>第一章 · Add 算子</h3><a href="#1.1" aria-current="page">1.1 认识昇腾算子开发</a><a href="#1.2">1.2 实现第一个 Add 算子</a></nav>
+<nav aria-label="视频目录"><h2>视频目录</h2><h3>第一章 · Add 算子</h3><a href="#1.1" aria-current="page">1.1 认识昇腾算子开发</a><a href="#1.2">1.2 实现第一个 Add 算子</a><a href="#1.3">1.3 基于 C API 实现 Add 算子</a></nav>
 <main>
 <h1>1.1 认识昇腾算子开发</h1>
 <video id="player" controls playsinline preload="metadata" poster="assets/slide-0.jpg" aria-label="1.1 认识昇腾算子开发"><source src="assets/videos/lesson-1-1.mp4" type="video/mp4">当前浏览器无法播放视频。</video>
@@ -31,7 +31,7 @@ main{padding:30px;min-width:0}h1{font-size:24px;margin:0 0 18px}video{display:bl
 </div>
 <script>
 const player=document.querySelector('#player');
-const lessons={'1.1':['认识昇腾算子开发',0],'1.2':['实现第一个 Add 算子',4]};
+const lessons={'1.1':['认识昇腾算子开发',0],'1.2':['实现第一个 Add 算子',4],'1.3':['基于 C API 实现 Add 算子',14]};
 let lesson='1.1';
 function selectLesson(){lesson=Object.hasOwn(lessons,location.hash.slice(1))?location.hash.slice(1):'1.1';const [title,poster]=lessons[lesson],url='assets/videos/lesson-'+lesson.replace('.','-')+'.mp4';
 player.pause();player.poster='assets/slide-'+poster+'.jpg';player.src=url;player.setAttribute('aria-label',lesson+' '+title);document.querySelector('h1').textContent=lesson+' '+title;document.querySelector('#duration').textContent='第一章 · 第 '+lesson.split('.')[1]+' 节';document.querySelector('#error').hidden=true;
